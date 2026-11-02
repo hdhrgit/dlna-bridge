@@ -46,10 +46,19 @@ type Recording struct {
 	Airing       Airing     `json:"Airing"`
 	Thumbnail    string     `json:"Thumbnail"`
 	Duration     float64    `json:"Duration"`     // seconds
-	CreatedAt    int64      `json:"CreatedAt"`    // Unix milliseconds
+	CreatedAt    int64      `json:"CreatedAt"`    // Unix seconds; see Created
 	PlaybackTime float64    `json:"PlaybackTime"` // seconds watched in the Channels apps
 	Completed    bool       `json:"Completed"`
 	Deleted      bool       `json:"Deleted"`
+}
+
+// Created is when the recording started. The DVR gives seconds; older
+// versions gave milliseconds.
+func (r Recording) Created() time.Time {
+	if r.CreatedAt > 1e11 {
+		return time.UnixMilli(r.CreatedAt)
+	}
+	return time.Unix(r.CreatedAt, 0)
 }
 
 // Group is a show folder in /dvr/groups.

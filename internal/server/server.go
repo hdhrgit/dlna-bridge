@@ -370,7 +370,7 @@ func (s *Server) recordingTree(ctx context.Context, host string) (folders, items
 			ID: id, Parent: parent, Title: recordingTitle(f), Class: classRecorded,
 			URL:      s.streamURL(host, dvr.RecordingPath(string(f.ID)), "/stream/rec/"+url.PathEscape(string(f.ID))),
 			Protocol: recProtocol, Duration: f.Duration, Art: img, Description: f.Airing.Summary,
-			Date: time.UnixMilli(f.CreatedAt), Bookmark: bm,
+			Date: f.Created(), Bookmark: bm,
 		})
 	}
 	for _, gid := range order {
@@ -398,7 +398,7 @@ func recordingTitle(f dvr.Recording) string {
 	if len(parts) == 0 {
 		parts = append(parts, a.Title)
 		if f.CreatedAt > 0 {
-			parts = append(parts, time.UnixMilli(f.CreatedAt).Format("2006-01-02"))
+			parts = append(parts, f.Created().Format("2006-01-02"))
 		}
 	}
 	return strings.Join(parts, " ")

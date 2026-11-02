@@ -23,7 +23,7 @@ func fakeDVR(t *testing.T) *httptest.Server {
 			{"id":"dup","name":"Duplicate","number":"5002"},
 			{"id":"sub","name":"Subchannel","number":"4.1"}]`,
 		"/devices/ANY/guide/now": `[{"Airings":[{"Channel":"5002","Time":` + itoa(now-60) + `,"Duration":3600,"Title":"Evening News"}],"Channel":{"Number":"5002"}}]`,
-		"/dvr/files": `[{"ID":"17","GroupID":"g1","Airing":{"Title":"Nova","EpisodeTitle":"Black Holes","SeasonNumber":3,"EpisodeNumber":4,"Image":"http://x/nova.jpg"},"Duration":3605.5,"CreatedAt":1793500000000,"PlaybackTime":120},
+		"/dvr/files": `[{"ID":"17","GroupID":"g1","Airing":{"Title":"Nova","EpisodeTitle":"Black Holes","SeasonNumber":3,"EpisodeNumber":4,"Image":"http://x/nova.jpg"},"Duration":3605.5,"CreatedAt":1793500000,"PlaybackTime":120},
 			{"ID":18,"GroupID":"g1","Airing":{"Title":"Nova"},"Duration":60,"CreatedAt":1793600000000,"Completed":true},
 			{"ID":"19","Airing":{"Title":"Loose"},"Duration":60,"CreatedAt":1793600000000},
 			{"ID":"20","GroupID":"g1","Deleted":true}]`,
