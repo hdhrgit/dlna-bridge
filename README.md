@@ -33,6 +33,7 @@ LAN address on the DVR's port. Open `http://HOST:8200/` to check the bridge reac
 | `-streams` | `DLNA_STREAMS` | `direct` | `proxy` sends the TVs' streams through the bridge, which adds the DLNA headers some TVs want |
 | `-advertise` | `DLNA_ADVERTISE` | | the address to announce, when the machine has several |
 | `-iface` | `DLNA_IFACE` | | the interface for discovery |
+| `-keep-ads` | `DLNA_KEEP_ADS` | `false` | play recordings with their commercials in |
 | `-state` | `DLNA_STATE` | `/var/lib/dlna` in Docker | where Samsung resume points are kept |
 | `-ffmpeg` | `DLNA_FFMPEG` | `ffmpeg` | |
 | `-tiny-max` | `DLNA_TINY_MAX` | `2` | tiny TV streams converted at once; more get 503 |
@@ -47,6 +48,19 @@ not list it twice.
 * **Recordings**: a folder per show (the DVR's groups), newest first, episodes titled `S01E02 Title`. They
   take byte ranges, so the TVs can seek. Samsung TVs save where they stopped (`X_SetBookmark`) and offer to
   resume; before that, they resume where the Channels apps left off.
+
+## Commercials
+
+DLNA has no way to tell a TV to skip a stretch, so the bridge leaves the breaks out. Once the DVR has finished a
+recording and marked its breaks (`Commercials` in `/dvr/files/<id>`, the same marks as `comskip.edl`), the TVs
+play it from `/stream/adfree/<id>`: the DVR's file with the bytes of each break left out, nothing re-encoded.
+The bridge finds each break's start by bisecting the file on video timestamps over byte ranges, starts the next
+part on the first keyframe after the break, and puts the PAT and PMT in front of it. The result is one file of
+whole packets with a length, so the TVs can still seek; its listed duration and resume point leave the breaks
+out. The timestamps jump at each join, as they do after a broadcast splice.
+
+Working out the cuts takes a few dozen range reads and is kept per recording. If it fails, the whole recording
+is served. `-keep-ads` (`DLNA_KEEP_ADS=true`) turns this off and points the TVs at the DVR's file again.
 
 ## Tiny TV
 

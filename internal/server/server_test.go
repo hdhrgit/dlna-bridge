@@ -24,7 +24,7 @@ func fakeDVR(t *testing.T) *httptest.Server {
 			{"id":"sub","name":"Subchannel","number":"4.1"}]`,
 		"/devices/ANY/guide/now": `[{"Airings":[{"Channel":"5002","Time":` + itoa(now-60) + `,"Duration":3600,"Title":"Evening News"}],"Channel":{"Number":"5002"}}]`,
 		"/dvr/files": `[{"ID":"17","GroupID":"g1","Airing":{"Title":"Nova","EpisodeTitle":"Black Holes","SeasonNumber":3,"EpisodeNumber":4,"Image":"http://x/nova.jpg"},"Duration":3605.5,"CreatedAt":1793500000,"PlaybackTime":120},
-			{"ID":18,"GroupID":"g1","Airing":{"Title":"Nova"},"Duration":60,"CreatedAt":1793600000000,"Completed":true},
+			{"ID":18,"GroupID":"g1","Airing":{"Title":"Nova"},"Duration":60,"CreatedAt":1793600000000,"Completed":true,"Processed":true,"FileSize":1000,"Commercials":[10,20,50,70],"PlaybackTime":30},
 			{"ID":"19","Airing":{"Title":"Loose"},"Duration":60,"CreatedAt":1793600000000},
 			{"ID":"20","GroupID":"g1","Deleted":true}]`,
 		"/dvr/groups": `[{"ID":"g1","Name":"Nova","Image":"http://x/nova.jpg"}]`,
@@ -175,7 +175,12 @@ func TestBrowseRecordings(t *testing.T) {
 	if older.Res.URL != s.URL+"/stream/rec/17" {
 		t.Errorf("proxy URL %q", older.Res.URL)
 	}
-	if !strings.Contains(older.DCM, "BM=120") || newest.DCM != "" {
+	// With marked breaks the recording plays through the bridge without them,
+	// and its length and resume point leave them out.
+	if newest.Res.URL != s.URL+"/stream/adfree/18" || newest.Res.Duration != "0:00:40.000" {
+		t.Errorf("ad-free recording: %+v", newest.Res)
+	}
+	if !strings.Contains(older.DCM, "BM=120") || !strings.Contains(newest.DCM, "BM=20") {
 		t.Errorf("bookmarks from the DVR: %q %q", older.DCM, newest.DCM)
 	}
 

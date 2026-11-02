@@ -32,16 +32,20 @@ type Config struct {
 	DVRPublic string
 	// Proxy sends the big TVs' streams through this server, which adds the
 	// DLNA headers some TVs want, instead of pointing them at the DVR.
-	Proxy     bool
-	FFmpeg    string
-	TinyMax   int // conversions at once
+	Proxy   bool
+	FFmpeg  string
+	TinyMax int // conversions at once
+	// KeepAds lists recordings with the DVR's commercial breaks in, played from
+	// the DVR. Otherwise those with breaks are served without them.
+	KeepAds   bool
 	Bookmarks *Bookmarks
 	Logf      func(format string, a ...any)
 }
 
 type Server struct {
-	cfg  Config
-	tiny chan struct{}
+	cfg   Config
+	tiny  chan struct{}
+	plans plans
 }
 
 func New(cfg Config) *Server {
@@ -65,6 +69,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/evt/{service}", s.events)
 	mux.HandleFunc("GET /stream/live/{number}", s.proxyLive)
 	mux.HandleFunc("GET /stream/rec/{id}", s.proxyRecording)
+	mux.HandleFunc("GET /stream/adfree/{id}", s.adFreeRecording)
 	mux.HandleFunc("GET /tiny/channels.m3u", s.tinyPlaylist)
 	mux.HandleFunc("GET /tiny/{file}", s.tinyStream)
 	return logRequests(s.cfg.Logf, mux)
@@ -358,20 +363,31 @@ func (s *Server) recordingTree(ctx context.Context, host string) (folders, items
 		count[gid]++
 		parent := "recgroup/" + gid
 		id := "rec/" + string(f.ID)
+		adFree := s.adFree(f)
 		bm := s.cfg.Bookmarks.Get(id)
-		if bm == 0 && !f.Completed {
-			bm = int(f.PlaybackTime) // where the Channels apps left off
+		if bm == 0 && f.PlaybackTime > 0 {
+			// Where the Channels apps left off, on the TV's clock.
+			if adFree {
+				bm = int(f.AdFree(f.PlaybackTime))
+			} else {
+				bm = int(f.PlaybackTime)
+			}
 		}
 		img := f.Thumbnail
 		if img == "" {
 			img = f.Airing.Image
 		}
-		items = append(items, object{
+		o := object{
 			ID: id, Parent: parent, Title: recordingTitle(f), Class: classRecorded,
 			URL:      s.streamURL(host, dvr.RecordingPath(string(f.ID)), "/stream/rec/"+url.PathEscape(string(f.ID))),
 			Protocol: recProtocol, Duration: f.Duration, Art: img, Description: f.Airing.Summary,
 			Date: f.Created(), Bookmark: bm,
-		})
+		}
+		if adFree {
+			o.URL = "http://" + host + "/stream/adfree/" + url.PathEscape(string(f.ID))
+			o.Duration = f.AdFree(-1)
+		}
+		items = append(items, o)
 	}
 	for _, gid := range order {
 		title := names[gid]

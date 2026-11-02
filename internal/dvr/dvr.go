@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"sort"
@@ -48,8 +49,29 @@ type Recording struct {
 	Duration     float64    `json:"Duration"`     // seconds
 	CreatedAt    int64      `json:"CreatedAt"`    // Unix seconds; see Created
 	PlaybackTime float64    `json:"PlaybackTime"` // seconds watched in the Channels apps
-	Completed    bool       `json:"Completed"`
-	Deleted      bool       `json:"Deleted"`
+	FileSize     int64      `json:"FileSize"`
+	// Commercials are the breaks the DVR found: start, end, start, end... in
+	// seconds. Empty until the recording is processed.
+	Commercials []float64 `json:"Commercials"`
+	Completed   bool      `json:"Completed"`
+	Processed   bool      `json:"Processed"`
+	Deleted     bool      `json:"Deleted"`
+}
+
+// AdFree is the time in the recording with the breaks taken out. t of -1 is
+// the end.
+func (r Recording) AdFree(t float64) float64 {
+	if t < 0 {
+		t = r.Duration
+	}
+	out := t
+	for i := 0; i+1 < len(r.Commercials); i += 2 {
+		from, to := r.Commercials[i], min(r.Commercials[i+1], t)
+		if to > from {
+			out -= to - from
+		}
+	}
+	return max(out, 0)
 }
 
 // Created is when the recording started. The DVR gives seconds; older
@@ -240,6 +262,61 @@ func LivePath(number string) string {
 // RecordingPath is the DVR's stream of a recorded file. It takes byte ranges.
 func RecordingPath(id string) string {
 	return "/dvr/files/" + url.PathEscape(id) + "/stream.mpg"
+}
+
+// Recording finds a recording by id.
+func (c *Client) Recording(ctx context.Context, id string) (Recording, bool, error) {
+	all, err := c.Recordings(ctx)
+	if err != nil {
+		return Recording{}, false, err
+	}
+	for _, r := range all {
+		if string(r.ID) == id {
+			return r, true, nil
+		}
+	}
+	return Recording{}, false, nil
+}
+
+// File reads byte ranges of one recording.
+type File struct {
+	c    *Client
+	path string
+	size int64
+}
+
+func (c *Client) File(r Recording) *File {
+	return &File{c: c, path: RecordingPath(string(r.ID)), size: r.FileSize}
+}
+
+func (f *File) Size() int64 { return f.size }
+
+func (f *File) ReadAt(ctx context.Context, off, n int64) ([]byte, error) {
+	body, err := f.Open(ctx, off, n)
+	if err != nil {
+		return nil, err
+	}
+	defer body.Close()
+	return io.ReadAll(body)
+}
+
+// Open streams n bytes from off.
+func (f *File) Open(ctx context.Context, off, n int64) (io.ReadCloser, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", f.c.Base.String()+f.path, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", off, off+n-1))
+	// No client timeout: the body may be a long stretch of a recording.
+	resp, err := http.DefaultTransport.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusPartialContent {
+		resp.Body.Close()
+		return nil, fmt.Errorf("DVR %s bytes %d-%d: %s", f.path, off, off+n-1, resp.Status)
+	}
+	return resp.Body, nil
 }
 
 // SmallStreamURL asks the DVR's transcoder for a small H.264/AAC HLS stream of

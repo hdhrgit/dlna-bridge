@@ -32,6 +32,7 @@ func main() {
 	advertise := flag.String("advertise", envOr("DLNA_ADVERTISE", ""), "address to announce to the TVs (default: the one facing each TV)")
 	iface := flag.String("iface", envOr("DLNA_IFACE", ""), "network interface for discovery (default: the system's)")
 	streams := flag.String("streams", envOr("DLNA_STREAMS", "direct"), "direct: TVs play from the DVR; proxy: through this server")
+	keepAds := flag.Bool("keep-ads", envBool("DLNA_KEEP_ADS"), "play recordings with their commercials in, instead of cutting out the breaks the DVR marked")
 	state := flag.String("state", envOr("DLNA_STATE", ""), "directory for bookmarks.json (default: keep bookmarks in memory)")
 	ffmpeg := flag.String("ffmpeg", envOr("DLNA_FFMPEG", "ffmpeg"), "ffmpeg for the tiny TV's streams")
 	tinyMax := flag.Int("tiny-max", envInt("DLNA_TINY_MAX", 2), "tiny TV streams converted at once")
@@ -69,7 +70,7 @@ func main() {
 	srv := server.New(server.Config{
 		Name: *name, UUID: uuid, Version: version,
 		DVR: client, DVRPublic: *dvrPublic, Proxy: *streams == "proxy",
-		FFmpeg: *ffmpeg, TinyMax: *tinyMax, Bookmarks: bookmarks,
+		FFmpeg: *ffmpeg, TinyMax: *tinyMax, KeepAds: *keepAds, Bookmarks: bookmarks,
 		Logf: log.Printf,
 	})
 
@@ -124,6 +125,11 @@ func envInt(key string, def int) int {
 		return v
 	}
 	return def
+}
+
+func envBool(key string) bool {
+	v, _ := strconv.ParseBool(os.Getenv(key))
+	return v
 }
 
 func fatal(err error) {
