@@ -43,8 +43,10 @@ not list it twice.
 
 ## What the TVs see
 
-* **Live TV**: every channel in number order, titled `<number> <name> - <show on now>` from the DVR's
+* **Live TV**: every channel that is not hidden in the Channels apps, in number order, titled `<number> <name> - <show on now>` from the DVR's
   `/devices/ANY/guide/now`, with its logo. Live streams cannot seek.
+* **Favorites**: the channels starred in the Channels apps, with the same titles. The folder is left out when
+  there are none.
 * **Recordings**: a folder per show (the DVR's groups), newest first, episodes titled `S01E02 Title`. They
   take byte ranges, so the TVs can seek. Samsung TVs save where they stopped (`X_SetBookmark`) and offer to
   resume; before that, they resume where the Channels apps left off.

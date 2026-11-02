@@ -157,7 +157,7 @@ func (s *Server) fault(w http.ResponseWriter, a action, err error) {
 }
 
 // Samsung TVs ask for this before they show the server's folders.
-const featureList = `<?xml version="1.0" encoding="UTF-8"?><Features xmlns="urn:schemas-upnp-org:av:avs" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="urn:schemas-upnp-org:av:avs http://www.upnp.org/schemas/av/avs.xsd"><Feature name="samsung.com_BASICVIEW" version="1"><container id="` + idLive + `" type="object.item.videoItem"/><container id="` + idRecordings + `" type="object.item.videoItem"/></Feature></Features>`
+const featureList = `<?xml version="1.0" encoding="UTF-8"?><Features xmlns="urn:schemas-upnp-org:av:avs" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="urn:schemas-upnp-org:av:avs http://www.upnp.org/schemas/av/avs.xsd"><Feature name="samsung.com_BASICVIEW" version="1"><container id="` + idLive + `" type="object.item.videoItem"/><container id="` + idFavorites + `" type="object.item.videoItem"/><container id="` + idRecordings + `" type="object.item.videoItem"/></Feature></Features>`
 
 // The tree never changes shape, so the update id only says "the lists may be
 // new": it moves on once a minute.
@@ -216,23 +216,27 @@ func atoiOr(s string, def int) (int, error) {
 const (
 	idRoot       = "0"
 	idLive       = "live"
+	idFavorites  = "fav"
 	idRecordings = "rec"
 )
 
 func (s *Server) children(ctx context.Context, host, id string) ([]object, error) {
 	switch {
 	case id == idRoot:
-		live, err := s.lookup(ctx, host, idLive)
-		if err != nil {
-			return nil, err
+		var out []object
+		for _, f := range []string{idLive, idFavorites, idRecordings} {
+			o, err := s.lookup(ctx, host, f)
+			if err == errNoSuchObject {
+				continue // no favorites
+			}
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, o)
 		}
-		rec, err := s.lookup(ctx, host, idRecordings)
-		if err != nil {
-			return nil, err
-		}
-		return []object{live, rec}, nil
-	case id == idLive:
-		return s.liveItems(ctx, host)
+		return out, nil
+	case id == idLive, id == idFavorites:
+		return s.liveItems(ctx, host, id)
 	case id == idRecordings:
 		folders, _, err := s.recordingTree(ctx, host)
 		return folders, err
@@ -251,7 +255,7 @@ func (s *Server) children(ctx context.Context, host, id string) ([]object, error
 			return nil, errNoSuchObject
 		}
 		return out, nil
-	case strings.HasPrefix(id, "live/"), strings.HasPrefix(id, "rec/"):
+	case strings.HasPrefix(id, "live/"), strings.HasPrefix(id, "fav/"), strings.HasPrefix(id, "rec/"):
 		return nil, nil // items have no children
 	}
 	return nil, errNoSuchObject
@@ -260,21 +264,35 @@ func (s *Server) children(ctx context.Context, host, id string) ([]object, error
 func (s *Server) lookup(ctx context.Context, host, id string) (object, error) {
 	switch {
 	case id == idRoot:
-		return object{ID: idRoot, Parent: "-1", Title: s.cfg.Name, Folder: true, Children: 2}, nil
-	case id == idLive:
-		chs, err := s.cfg.DVR.Channels(ctx)
+		kids, err := s.children(ctx, host, idRoot)
 		if err != nil {
 			return object{}, err
 		}
-		return object{ID: idLive, Parent: idRoot, Title: "Live TV", Folder: true, Children: len(chs)}, nil
+		return object{ID: idRoot, Parent: "-1", Title: s.cfg.Name, Folder: true, Children: len(kids)}, nil
+	case id == idLive, id == idFavorites:
+		items, err := s.liveItems(ctx, host, id)
+		if err != nil {
+			return object{}, err
+		}
+		if id == idFavorites {
+			if len(items) == 0 {
+				return object{}, errNoSuchObject
+			}
+			return object{ID: idFavorites, Parent: idRoot, Title: "Favorites", Folder: true, Children: len(items)}, nil
+		}
+		return object{ID: idLive, Parent: idRoot, Title: "Live TV", Folder: true, Children: len(items)}, nil
 	case id == idRecordings:
 		folders, _, err := s.recordingTree(ctx, host)
 		if err != nil {
 			return object{}, err
 		}
 		return object{ID: idRecordings, Parent: idRoot, Title: "Recordings", Folder: true, Children: len(folders)}, nil
-	case strings.HasPrefix(id, "live/"):
-		items, err := s.liveItems(ctx, host)
+	case strings.HasPrefix(id, "live/"), strings.HasPrefix(id, "fav/"):
+		parent := idLive
+		if strings.HasPrefix(id, "fav/") {
+			parent = idFavorites
+		}
+		items, err := s.liveItems(ctx, host, parent)
 		if err != nil {
 			return object{}, err
 		}
@@ -304,7 +322,8 @@ func find(objs []object, id string) (object, error) {
 	return object{}, errNoSuchObject
 }
 
-func (s *Server) liveItems(ctx context.Context, host string) ([]object, error) {
+// liveItems lists the channels in the Live TV folder, or just the favorites.
+func (s *Server) liveItems(ctx context.Context, host, parent string) ([]object, error) {
 	chs, err := s.cfg.DVR.Channels(ctx)
 	if err != nil {
 		return nil, err
@@ -316,12 +335,15 @@ func (s *Server) liveItems(ctx context.Context, host string) ([]object, error) {
 	}
 	out := make([]object, 0, len(chs))
 	for _, ch := range chs {
+		if parent == idFavorites && !ch.Favorited {
+			continue
+		}
 		title := ch.Number + " " + ch.Name
 		if show := now[ch.Number]; show != "" {
 			title += " - " + show
 		}
 		out = append(out, object{
-			ID: "live/" + ch.Number, Parent: idLive, Title: title, Class: classLive,
+			ID: parent + "/" + ch.Number, Parent: parent, Title: title, Class: classLive,
 			URL:      s.streamURL(host, dvr.LivePath(ch.Number), "/stream/live/"+url.PathEscape(ch.Number)),
 			Protocol: liveProtocol, Art: ch.Logo, ChannelNr: ch.Number, ChannelName: ch.Name,
 		})

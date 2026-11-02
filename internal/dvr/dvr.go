@@ -24,6 +24,9 @@ type Channel struct {
 	Logo   string `json:"logo_url"`
 	HD     bool   `json:"hd"`
 	Source string `json:"source_name"`
+	// Favorited and Hidden are the flags set in the Channels apps.
+	Favorited bool `json:"favorited"`
+	Hidden    bool `json:"hidden"`
 }
 
 // Airing is one show in the guide or one recorded show.
@@ -161,13 +164,19 @@ func (c *Client) Channels(ctx context.Context) ([]Channel, error) {
 		if err := c.getJSON(ctx, "/api/v1/channels", &all); err != nil {
 			return nil, err
 		}
-		seen := map[string]bool{}
+		// Several sources can carry a number; the DVR picks one when it plays
+		// it, so list the number once, as a favorite if any of them is.
+		at := map[string]int{}
 		out := all[:0]
 		for _, ch := range all {
-			if ch.Number == "" || seen[ch.Number] {
+			if ch.Number == "" || ch.Hidden {
 				continue
 			}
-			seen[ch.Number] = true
+			if i, ok := at[ch.Number]; ok {
+				out[i].Favorited = out[i].Favorited || ch.Favorited
+				continue
+			}
+			at[ch.Number] = len(out)
 			out = append(out, ch)
 		}
 		sort.SliceStable(out, func(i, j int) bool { return numberLess(out[i].Number, out[j].Number) })

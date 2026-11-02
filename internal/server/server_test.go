@@ -18,7 +18,8 @@ import (
 func fakeDVR(t *testing.T) *httptest.Server {
 	now := time.Now().Unix()
 	bodies := map[string]string{
-		"/api/v1/channels": `[{"id":"cspan.house","name":"C-SPAN House Floor","number":"5000","logo_url":"http://x/logo.png","hd":true},
+		"/api/v1/channels": `[{"id":"cspan.house","name":"C-SPAN House Floor","number":"5000","logo_url":"http://x/logo.png","hd":true,"favorited":true},
+			{"id":"hid","name":"Hidden","number":"9","hidden":true},
 			{"id":"reuters","name":"Reuters & Co","number":"5002","logo_url":"","hd":true},
 			{"id":"dup","name":"Duplicate","number":"5002"},
 			{"id":"sub","name":"Subchannel","number":"4.1"}]`,
@@ -115,14 +116,17 @@ func browse(t *testing.T, base, id, flag string, start, count int) (browseResult
 func TestBrowseRoot(t *testing.T) {
 	s := newTestServer(t, false)
 	br, d := browse(t, s.URL, "0", "BrowseDirectChildren", 0, 0)
-	if br.TotalMatches != 2 || len(d.Containers) != 2 {
+	if br.TotalMatches != 3 || len(d.Containers) != 3 {
 		t.Fatalf("root: %+v", d)
 	}
 	if d.Containers[0].Title != "Live TV" || d.Containers[0].ChildCount != 3 {
 		t.Errorf("live folder: %+v", d.Containers[0])
 	}
-	if d.Containers[1].Title != "Recordings" || d.Containers[1].ChildCount != 2 {
-		t.Errorf("recordings folder: %+v", d.Containers[1])
+	if d.Containers[1].Title != "Favorites" || d.Containers[1].ChildCount != 1 {
+		t.Errorf("favorites folder: %+v", d.Containers[1])
+	}
+	if d.Containers[2].Title != "Recordings" || d.Containers[2].ChildCount != 2 {
+		t.Errorf("recordings folder: %+v", d.Containers[2])
 	}
 	_, meta := browse(t, s.URL, "0", "BrowseMetadata", 0, 0)
 	if len(meta.Containers) != 1 || meta.Containers[0].Title != "Test DVR" {
@@ -152,6 +156,18 @@ func TestBrowseLive(t *testing.T) {
 	br, d = browse(t, s.URL, "live", "BrowseDirectChildren", 1, 1)
 	if br.TotalMatches != 3 || br.NumberReturned != 1 || d.Items[0].ID != "live/5000" {
 		t.Errorf("paging: %+v %+v", br, d)
+	}
+}
+
+func TestBrowseFavorites(t *testing.T) {
+	s := newTestServer(t, false)
+	_, d := browse(t, s.URL, "fav", "BrowseDirectChildren", 0, 0)
+	if len(d.Items) != 1 || d.Items[0].ID != "fav/5000" {
+		t.Fatalf("favorites: %+v", d.Items)
+	}
+	_, d = browse(t, s.URL, "fav/5000", "BrowseMetadata", 0, 0)
+	if len(d.Items) != 1 {
+		t.Errorf("favorite metadata: %+v", d)
 	}
 }
 
