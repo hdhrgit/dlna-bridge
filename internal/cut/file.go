@@ -64,8 +64,8 @@ func (f *File) Read(b []byte) (int, error) {
 			if err != nil {
 				return 0, err
 			}
-			if p.Shift != 0 {
-				body = &shifter{r: body, shift: p.Shift}
+			if p.Shift != 0 || p.DropTo > 0 {
+				body = &shifter{r: body, shift: p.Shift, pos: in - skip, dropFrom: p.DropFrom, dropTo: p.DropTo, videoPID: f.plan.videoPID}
 			}
 			if _, err := io.CopyN(io.Discard, body, skip); err != nil {
 				body.Close()
@@ -105,10 +105,13 @@ func (f *File) Close() error {
 
 // shifter passes a stream of whole packets through, moving the timestamps back.
 type shifter struct {
-	r     io.ReadCloser
-	shift int64
-	buf   []byte // converted bytes not yet read
-	raw   [packetSize * 64]byte
+	r                io.ReadCloser
+	shift            int64
+	pos              int64 // of the next packet in the part
+	dropFrom, dropTo int64
+	videoPID         int
+	buf              []byte // converted bytes not yet read
+	raw              [packetSize * 64]byte
 }
 
 func (s *shifter) Read(b []byte) (int, error) {
@@ -122,9 +125,15 @@ func (s *shifter) Read(b []byte) (int, error) {
 			return 0, err
 		}
 		for i := 0; i < n; i += packetSize {
-			if s.raw[i] == 0x47 {
-				shiftPacket(s.raw[i:i+packetSize], s.shift)
+			p := s.raw[i : i+packetSize]
+			if p[0] == 0x47 {
+				if s.pos >= s.dropFrom && s.pos < s.dropTo && (int(p[1]&0x1f)<<8|int(p[2])) == s.videoPID {
+					nullPacket(p)
+				} else {
+					shiftPacket(p, s.shift)
+				}
 			}
+			s.pos += packetSize
 		}
 		s.buf = s.raw[:n]
 	}
@@ -134,3 +143,11 @@ func (s *shifter) Read(b []byte) (int, error) {
 }
 
 func (s *shifter) Close() error { return s.r.Close() }
+
+// nullPacket turns a packet into a null packet, which decoders skip.
+func nullPacket(p []byte) {
+	p[1], p[2], p[3] = 0x1f, 0xff, 0x10
+	for i := 4; i < packetSize; i++ {
+		p[i] = 0xff
+	}
+}

@@ -22,12 +22,18 @@ type Part struct {
 	// Shift is what to take off every timestamp and clock mark (90 kHz) in the
 	// part, so the time keeps running across the break before it.
 	Shift int64
+	// Video packets from DropFrom to DropTo, counted from the start of the
+	// part, are the pictures right after the first keyframe that show what came
+	// before it. Without that footage they decode as garbage, so they are
+	// replaced by empty packets.
+	DropFrom, DropTo int64
 }
 
 // Plan is the recording with the breaks left out.
 type Plan struct {
-	Parts []Part
-	Size  int64
+	Parts    []Part
+	videoPID int
+	Size     int64
 	// Kept lists the time ranges, in the recording, that the plan keeps.
 	Kept [][2]float64
 }
@@ -59,9 +65,10 @@ func Make(ctx context.Context, src Source, breaks []float64) (*Plan, error) {
 	f.base = base
 
 	size := src.Size()
-	p := &Plan{}
+	p := &Plan{videoPID: st.videoPID}
 	pos, posT := int64(0), 0.0 // the start of the part being kept
 	var shift int64            // the length of the breaks so far, in 90 kHz ticks
+	var dropFrom, dropTo int64 // the leading pictures after pos
 	for i := 0; i < len(breaks); i += 2 {
 		from, to := breaks[i], breaks[i+1]
 		if to <= from || from < posT {
@@ -81,19 +88,25 @@ func Make(ctx context.Context, src Source, breaks []float64) (*Plan, error) {
 			if pos > 0 {
 				p.Parts = append(p.Parts, Part{Data: append(append([]byte(nil), st.pat...), st.pmt...)})
 			}
-			p.Parts = append(p.Parts, Part{Off: pos, Len: out - pos, Shift: shift})
+			p.Parts = append(p.Parts, Part{Off: pos, Len: out - pos, Shift: shift, DropFrom: dropFrom, DropTo: dropTo})
 			p.Kept = append(p.Kept, [2]float64{posT, from})
 		}
 		if in < size {
 			shift += int64(math.Round((inT - outT) * 90000))
 		}
 		pos, posT = in, inT
+		dropFrom, dropTo = 0, 0
+		if in < size {
+			if dropFrom, dropTo, err = f.leading(in, inT); err != nil {
+				return nil, fmt.Errorf("after the break at %.1fs: %w", from, err)
+			}
+		}
 	}
 	if pos < size {
 		if pos > 0 {
 			p.Parts = append(p.Parts, Part{Data: append(append([]byte(nil), st.pat...), st.pmt...)})
 		}
-		p.Parts = append(p.Parts, Part{Off: pos, Len: size - pos, Shift: shift})
+		p.Parts = append(p.Parts, Part{Off: pos, Len: size - pos, Shift: shift, DropFrom: dropFrom, DropTo: dropTo})
 		p.Kept = append(p.Kept, [2]float64{posT, -1})
 	}
 	for i := range p.Parts {
@@ -233,6 +246,48 @@ func (f *finder) scan(off int64, t float64, keyframe bool) (int64, float64, erro
 		off += int64(len(b) / packetSize * packetSize)
 	}
 	return 0, 0, fmt.Errorf("nothing found within 16 MB after %.1fs", t)
+}
+
+// leading finds the pictures that follow the keyframe at off in the file but
+// are shown before it (B-frames of an open GOP): the byte range, counted from
+// off, that holds their video packets. It stops at the first picture shown
+// after the keyframe.
+func (f *finder) leading(off int64, keyT float64) (from, to int64, err error) {
+	start := off
+	for end := off + 4<<20; off < end; {
+		if off >= f.src.Size() {
+			return from, to, nil
+		}
+		b, err := f.src.ReadAt(f.ctx, off, probe)
+		if err != nil {
+			return 0, 0, err
+		}
+		for i := 0; i+packetSize <= len(b); i += packetSize {
+			pk, ok := parsePacket(b[i:])
+			if !ok {
+				return 0, 0, fmt.Errorf("lost packet sync at byte %d", off+int64(i))
+			}
+			if pk.pid != f.st.videoPID || !pk.pusi || off+int64(i) == start {
+				continue
+			}
+			pts, ok := pesPTS(pk.payload)
+			if !ok {
+				continue
+			}
+			at := off + int64(i) - start
+			if f.seconds(pts) >= keyT {
+				if from > 0 {
+					to = at
+				}
+				return from, to, nil
+			}
+			if from == 0 {
+				from = at
+			}
+		}
+		off += int64(len(b) / packetSize * packetSize)
+	}
+	return 0, 0, nil // no end in sight: leave the pictures in
 }
 
 // keyframeNAL looks in the first packet of a PES for an H.264 SPS or IDR, or

@@ -55,6 +55,8 @@ func tsPacket(pid int, pusi, rai bool, payload []byte) []byte {
 func section(b []byte) []byte { return append([]byte{0}, b...) } // pointer field
 
 // testStream is secs seconds of video starting at PTS base, 21 packets a frame.
+// Frames come in decode order I B B P P...: the two B-frames after each
+// keyframe are shown before it, as in an open GOP.
 func testStream(secs int, base int64) []byte {
 	var out []byte
 	pat := []byte{0x00, 0xb0, 13, 0, 1, 0xc1, 0, 0, 0, 1, 0xe0 | 0x10>>8, 0x10, 0, 0, 0, 0}
@@ -62,7 +64,15 @@ func testStream(secs int, base int64) []byte {
 	out = append(out, tsPacket(0, true, false, section(pat))...)
 	out = append(out, tsPacket(0x10, true, false, section(pmt))...)
 	for f := 0; f < secs*testFPS; f++ {
-		pts := (base + int64(f)*90000/testFPS) % ptsWrap
+		e := int64(f) // the frame's place in display order
+		switch k := f % testGOP; {
+		case k == 0:
+		case k < 3:
+			e -= 3
+		default:
+			e -= 2
+		}
+		pts := (base + e*90000/testFPS + ptsWrap) % ptsWrap
 		pes := []byte{0, 0, 1, 0xe0, 0, 0, 0x80, 0x80, 5,
 			byte(0x21 | pts>>29&0x0e), byte(pts >> 22), byte(pts>>14 | 1), byte(pts >> 7), byte(pts<<1 | 1),
 			0, 0, 1, 0x41} // a non-IDR slice
@@ -129,24 +139,42 @@ func TestMake(t *testing.T) {
 	if sync(all) != 0 || len(all)%packetSize != 0 {
 		t.Error("the cut file is not whole packets")
 	}
-	// The timestamps run on across the joins: no frame is more than a frame
-	// apart from the one before it.
+	// The timestamps run on across the joins, and no keyframe after one is
+	// followed by a picture shown before it.
 	var last int64 = -1
-	frames := 0
+	var key int64
+	var lead, joins, frames int
+	var afterPAT bool
 	for i := 0; i+packetSize <= len(all); i += packetSize {
 		pk, _ := parsePacket(all[i:])
+		if pk.pid == 0 && i > 0 { // the PAT that opens each part after a break
+			afterPAT = true
+		}
 		if pk.pid != testVideoPID || !pk.pusi {
 			continue
 		}
 		pts, _ := pesPTS(pk.payload)
-		if last >= 0 && (pts-last+ptsWrap)%ptsWrap != 3000 {
+		if last >= 0 && math.Abs(float64((pts-last+3*ptsWrap/2)%ptsWrap-ptsWrap/2)) > 90000 {
 			t.Fatalf("frame %d: PTS %d after %d", frames, pts, last)
+		}
+		if pk.rai {
+			key, lead = pts, 0
+			if afterPAT {
+				lead = 3
+				joins++
+			}
+			afterPAT = false
+		} else if lead > 0 {
+			lead--
+			if (pts-key+3*ptsWrap/2)%ptsWrap-ptsWrap/2 < 0 {
+				t.Errorf("frame %d, %d after the keyframe at a join: PTS %d is before its %d", frames, 3-lead, pts, key)
+			}
 		}
 		last = pts
 		frames++
 	}
-	if want := int((p.CutTime(60) + 0.5) * testFPS); frames < want-testFPS || frames > want+testFPS {
-		t.Errorf("%d frames, want about %d", frames, want)
+	if joins != 2 {
+		t.Errorf("%d joins", joins)
 	}
 	// Seeking, even into the middle of a packet, reads the same bytes.
 	for _, off := range []int64{kept[0].Len + 100, kept[0].Len + packetSize*2 + 7, p.Size - 500} {
