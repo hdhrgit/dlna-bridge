@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 )
 
 // Source reads byte ranges of the recording.
@@ -18,6 +19,9 @@ type Source interface {
 type Part struct {
 	Off, Len int64  // in the recording
 	Data     []byte // when set, served instead of the recording's bytes
+	// Shift is what to take off every timestamp and clock mark (90 kHz) in the
+	// part, so the time keeps running across the break before it.
+	Shift int64
 }
 
 // Plan is the recording with the breaks left out.
@@ -57,12 +61,13 @@ func Make(ctx context.Context, src Source, breaks []float64) (*Plan, error) {
 	size := src.Size()
 	p := &Plan{}
 	pos, posT := int64(0), 0.0 // the start of the part being kept
+	var shift int64            // the length of the breaks so far, in 90 kHz ticks
 	for i := 0; i < len(breaks); i += 2 {
 		from, to := breaks[i], breaks[i+1]
 		if to <= from || from < posT {
 			continue
 		}
-		out, err := f.packetAt(from)
+		out, outT, err := f.packetAt(from)
 		if err != nil {
 			return nil, fmt.Errorf("break at %.1fs: %w", from, err)
 		}
@@ -76,8 +81,11 @@ func Make(ctx context.Context, src Source, breaks []float64) (*Plan, error) {
 			if pos > 0 {
 				p.Parts = append(p.Parts, Part{Data: append(append([]byte(nil), st.pat...), st.pmt...)})
 			}
-			p.Parts = append(p.Parts, Part{Off: pos, Len: out - pos})
+			p.Parts = append(p.Parts, Part{Off: pos, Len: out - pos, Shift: shift})
 			p.Kept = append(p.Kept, [2]float64{posT, from})
+		}
+		if in < size {
+			shift += int64(math.Round((inT - outT) * 90000))
 		}
 		pos, posT = in, inT
 	}
@@ -85,7 +93,7 @@ func Make(ctx context.Context, src Source, breaks []float64) (*Plan, error) {
 		if pos > 0 {
 			p.Parts = append(p.Parts, Part{Data: append(append([]byte(nil), st.pat...), st.pmt...)})
 		}
-		p.Parts = append(p.Parts, Part{Off: pos, Len: size - pos})
+		p.Parts = append(p.Parts, Part{Off: pos, Len: size - pos, Shift: shift})
 		p.Kept = append(p.Kept, [2]float64{posT, -1})
 	}
 	for i := range p.Parts {
@@ -163,7 +171,7 @@ func (f *finder) seconds(pts int64) float64 {
 
 // packetAt finds the first video frame at or after t seconds, by bisecting
 // the file on timestamps and then reading on from there.
-func (f *finder) packetAt(t float64) (int64, error) {
+func (f *finder) packetAt(t float64) (int64, float64, error) {
 	lo, hi := f.first, f.src.Size()
 	for hi-lo > probe {
 		mid := f.align(lo + (hi-lo)/2)
@@ -173,7 +181,7 @@ func (f *finder) packetAt(t float64) (int64, error) {
 			continue
 		}
 		if err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 		if f.seconds(pts) < t {
 			lo = at + packetSize
@@ -181,13 +189,12 @@ func (f *finder) packetAt(t float64) (int64, error) {
 			hi = mid
 		}
 	}
-	off, _, err := f.scan(lo, t, false)
-	return off, err
+	return f.scan(lo, t, false)
 }
 
 // keyframeAfter finds the first keyframe at or after t seconds, and its time.
 func (f *finder) keyframeAfter(t float64) (int64, float64, error) {
-	off, err := f.packetAt(t)
+	off, _, err := f.packetAt(t)
 	if err != nil {
 		return 0, 0, err
 	}

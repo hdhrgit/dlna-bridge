@@ -126,26 +126,36 @@ func TestMake(t *testing.T) {
 	if err != nil || int64(len(all)) != p.Size {
 		t.Fatalf("read %d of %d: %v", len(all), p.Size, err)
 	}
-	var want []byte
-	for _, part := range p.Parts {
-		if part.Data != nil {
-			want = append(want, part.Data...)
-		} else {
-			want = append(want, src[part.Off:part.Off+part.Len]...)
-		}
-	}
-	if !bytes.Equal(all, want) {
-		t.Fatal("bytes differ from the parts")
-	}
 	if sync(all) != 0 || len(all)%packetSize != 0 {
 		t.Error("the cut file is not whole packets")
 	}
-	off := kept[0].Len + 100
-	f.Seek(off, io.SeekStart)
-	b := make([]byte, 1000)
-	n, _ := io.ReadFull(f, b)
-	if !bytes.Equal(b[:n], all[off:off+int64(n)]) {
-		t.Error("seek read different bytes")
+	// The timestamps run on across the joins: no frame is more than a frame
+	// apart from the one before it.
+	var last int64 = -1
+	frames := 0
+	for i := 0; i+packetSize <= len(all); i += packetSize {
+		pk, _ := parsePacket(all[i:])
+		if pk.pid != testVideoPID || !pk.pusi {
+			continue
+		}
+		pts, _ := pesPTS(pk.payload)
+		if last >= 0 && (pts-last+ptsWrap)%ptsWrap != 3000 {
+			t.Fatalf("frame %d: PTS %d after %d", frames, pts, last)
+		}
+		last = pts
+		frames++
+	}
+	if want := int((p.CutTime(60) + 0.5) * testFPS); frames < want-testFPS || frames > want+testFPS {
+		t.Errorf("%d frames, want about %d", frames, want)
+	}
+	// Seeking, even into the middle of a packet, reads the same bytes.
+	for _, off := range []int64{kept[0].Len + 100, kept[0].Len + packetSize*2 + 7, p.Size - 500} {
+		f.Seek(off, io.SeekStart)
+		b := make([]byte, 1000)
+		n, _ := io.ReadFull(f, b)
+		if n == 0 || !bytes.Equal(b[:n], all[off:off+int64(n)]) {
+			t.Errorf("seek to %d read different bytes", off)
+		}
 	}
 }
 

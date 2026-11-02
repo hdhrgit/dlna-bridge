@@ -130,3 +130,43 @@ func pesPTS(b []byte) (int64, bool) {
 	p := b[9:14]
 	return int64(p[0]>>1&7)<<30 | int64(p[1])<<22 | int64(p[2]>>1)<<15 | int64(p[3])<<7 | int64(p[4]>>1), true
 }
+
+// shiftPacket takes shift (90 kHz ticks) off the PCR in the packet's
+// adaptation field and off the PTS and DTS of a PES that starts in it.
+func shiftPacket(p []byte, shift int64) {
+	afc := p[3] >> 4 & 3
+	i := 4
+	if afc&2 != 0 {
+		n := int(p[4])
+		if n >= 7 && p[5]&0x10 != 0 { // PCR: 33 bits base, 6 reserved, 9 bits extension
+			base := int64(p[6])<<25 | int64(p[7])<<17 | int64(p[8])<<9 | int64(p[9])<<1 | int64(p[10]>>7)
+			base = (base - shift%ptsWrap + ptsWrap) % ptsWrap
+			p[6], p[7], p[8], p[9] = byte(base>>25), byte(base>>17), byte(base>>9), byte(base>>1)
+			p[10] = byte(base<<7) | p[10]&0x7f
+		}
+		i = 5 + n
+	}
+	if afc&1 == 0 || p[1]&0x40 == 0 || i+14 > packetSize {
+		return
+	}
+	pes := p[i:packetSize]
+	if pes[0] != 0 || pes[1] != 0 || pes[2] != 1 || pes[7]&0x80 == 0 {
+		return
+	}
+	setTimestamp(pes[9:14], shift)
+	if pes[7]&0x40 != 0 && len(pes) >= 19 {
+		setTimestamp(pes[14:19], shift)
+	}
+}
+
+// setTimestamp moves the 33-bit timestamp in five bytes back by shift, keeping
+// the marker bits and the prefix.
+func setTimestamp(b []byte, shift int64) {
+	ts := int64(b[0]>>1&7)<<30 | int64(b[1])<<22 | int64(b[2]>>1)<<15 | int64(b[3])<<7 | int64(b[4]>>1)
+	ts = (ts - shift%ptsWrap + ptsWrap) % ptsWrap
+	b[0] = b[0]&0xf0 | byte(ts>>30&7)<<1 | 1
+	b[1] = byte(ts >> 22)
+	b[2] = byte(ts>>14) | 1
+	b[3] = byte(ts >> 7)
+	b[4] = byte(ts<<1) | 1
+}

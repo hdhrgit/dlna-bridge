@@ -59,8 +59,16 @@ func (f *File) Read(b []byte) (int, error) {
 		}
 		if f.body == nil || f.bodyPos != f.pos {
 			f.closeBody()
-			body, err := f.open(f.ctx, p.Off+in, p.Len-in)
+			skip := in % packetSize // a seek into the middle of a packet
+			body, err := f.open(f.ctx, p.Off+in-skip, p.Len-in+skip)
 			if err != nil {
+				return 0, err
+			}
+			if p.Shift != 0 {
+				body = &shifter{r: body, shift: p.Shift}
+			}
+			if _, err := io.CopyN(io.Discard, body, skip); err != nil {
+				body.Close()
 				return 0, err
 			}
 			f.body, f.bodyPos = body, f.pos
@@ -94,3 +102,35 @@ func (f *File) Close() error {
 	f.closeBody()
 	return nil
 }
+
+// shifter passes a stream of whole packets through, moving the timestamps back.
+type shifter struct {
+	r     io.ReadCloser
+	shift int64
+	buf   []byte // converted bytes not yet read
+	raw   [packetSize * 64]byte
+}
+
+func (s *shifter) Read(b []byte) (int, error) {
+	if len(s.buf) == 0 {
+		n, err := io.ReadFull(s.r, s.raw[:])
+		n -= n % packetSize
+		if n == 0 {
+			if err == io.ErrUnexpectedEOF {
+				err = io.EOF
+			}
+			return 0, err
+		}
+		for i := 0; i < n; i += packetSize {
+			if s.raw[i] == 0x47 {
+				shiftPacket(s.raw[i:i+packetSize], s.shift)
+			}
+		}
+		s.buf = s.raw[:n]
+	}
+	n := copy(b, s.buf)
+	s.buf = s.buf[n:]
+	return n, nil
+}
+
+func (s *shifter) Close() error { return s.r.Close() }
