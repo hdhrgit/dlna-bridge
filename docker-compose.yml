@@ -1,0 +1,24 @@
+services:
+  dlna:
+    build: .
+    image: dlna:dev
+    restart: unless-stopped
+    init: true # reaps the tiny TV's ffmpegs
+    # Discovery is UDP multicast on the LAN, which a bridged container never sees.
+    network_mode: host
+    volumes:
+      - dlna-state:/var/lib/dlna
+    environment:
+      # The DVR, as this container reaches it. With host networking and the DVR on
+      # the same machine, localhost works, and the TVs are sent to this machine's
+      # LAN address on the same port.
+      DLNA_DVR: http://localhost:8089
+      DLNA_NAME: Channels DVR
+      # direct: TVs play the DVR's own streams. proxy: through the bridge, which adds
+      # the DLNA headers some TVs insist on. Try proxy if a TV lists channels but will not play.
+      DLNA_STREAMS: direct
+      # Optional: the address to announce, when this machine has several and TVs
+      # pick the wrong one.
+      # DLNA_ADVERTISE: 192.168.1.10
+volumes:
+  dlna-state:
