@@ -9,7 +9,7 @@ COPY . .
 RUN export GOOS=$TARGETOS GOARCH=$TARGETARCH CGO_ENABLED=0 \
  && go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/dlna ./cmd/dlna
 
-# ffmpeg converts the tiny TV's streams.
+# ffmpeg converts streams for clients set to that.
 FROM debian:stable-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/dlna /usr/local/bin/

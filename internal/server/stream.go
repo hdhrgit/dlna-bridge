@@ -10,17 +10,46 @@ import (
 	"path/filepath"
 	"sync"
 
+	"dlna/internal/config"
 	"dlna/internal/dvr"
 )
 
-// proxyLive and proxyRecording pass the DVR's stream through, byte ranges and
-// all, adding the DLNA headers that some TVs check before they play.
-func (s *Server) proxyLive(w http.ResponseWriter, r *http.Request) {
-	s.proxy(w, r, dvr.LivePath(r.PathValue("number")), liveFeatures)
+// streamLive plays a channel to a client, as the client's profile says: passed
+// through from the DVR, or converted.
+func (s *Server) streamLive(w http.ResponseWriter, r *http.Request) {
+	number, dev := r.PathValue("number"), r.URL.Query().Get("dev")
+	name, prof := s.profileFor(r)
+	if prof.Mode != config.ModeTranscode {
+		s.proxy(w, r, dvr.LivePath(dev, number), liveFeatures)
+		return
+	}
+	ch, found, err := s.cfg.DVR.Channel(r.Context(), number)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	if !found {
+		http.NotFound(w, r)
+		return
+	}
+	t := prof.Transcode
+	input := s.cfg.DVR.Base.String() + dvr.LivePath(dev, number)
+	if t.PreScale {
+		// The DVR scales the picture down first, which costs it less than
+		// sending the full one for us to decode.
+		input = s.cfg.DVR.SmallStreamURL(dev, number, evenCeil(t.MaxHeight), t.VideoKbps*2+t.AudioKbps)
+	}
+	s.transcode(w, r, t, name, number+" "+ch.Name, input)
 }
 
-func (s *Server) proxyRecording(w http.ResponseWriter, r *http.Request) {
-	s.proxy(w, r, dvr.RecordingPath(r.PathValue("id")), recFeatures)
+func (s *Server) streamRecording(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	name, prof := s.profileFor(r)
+	if prof.Mode != config.ModeTranscode {
+		s.proxy(w, r, dvr.RecordingPath(id), recFeatures)
+		return
+	}
+	s.transcode(w, r, prof.Transcode, name, "recording "+id, s.cfg.DVR.Base.String()+dvr.RecordingPath(id))
 }
 
 func (s *Server) proxy(w http.ResponseWriter, r *http.Request, dvrPath, features string) {

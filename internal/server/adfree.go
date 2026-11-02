@@ -4,17 +4,19 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
+	"dlna/internal/config"
 	"dlna/internal/cut"
 	"dlna/internal/dvr"
 )
 
-// adFree says whether a recording is served with its breaks cut out: only
-// once the DVR has finished it and marked them.
+// adFree says whether a recording has breaks to cut out: only once the DVR has
+// finished it and marked them.
 func (s *Server) adFree(f dvr.Recording) bool {
-	return !s.cfg.KeepAds && f.Completed && f.Processed && f.FileSize > 0 && len(f.Commercials) >= 2
+	return f.Completed && f.Processed && f.FileSize > 0 && len(f.Commercials) >= 2
 }
 
 // plans keeps each recording's cut list, which takes a few dozen range reads
@@ -57,10 +59,23 @@ func (p *plans) get(ctx context.Context, f dvr.Recording, file *dvr.File) (*cut.
 	return e.plan, e.err
 }
 
-// adFreeRecording serves a recording without its breaks, seekable like the
-// original. If the cut list cannot be made it serves the whole recording.
-func (s *Server) adFreeRecording(w http.ResponseWriter, r *http.Request) {
+// streamAdFree plays a recording without its breaks: seekable like the
+// original, or converted if the client's profile says so. ?raw=1 is the
+// seekable one whatever the profile, for the converter to read.
+func (s *Server) streamAdFree(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if r.URL.Query().Get("raw") == "" {
+		if name, prof := s.profileFor(r); prof.Mode == config.ModeTranscode {
+			s.transcode(w, r, prof.Transcode, name, "recording "+id, s.cfg.SelfURL+"/stream/adfree/"+url.PathEscape(id)+"?raw=1")
+			return
+		}
+	}
+	s.adFreeRecording(w, r, id)
+}
+
+// adFreeRecording serves a recording without its breaks. If the cut list
+// cannot be made it serves the whole recording.
+func (s *Server) adFreeRecording(w http.ResponseWriter, r *http.Request, id string) {
 	f, found, err := s.cfg.DVR.Recording(r.Context(), id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)

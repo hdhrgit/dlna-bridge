@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DLNA bridge</title>
+<style>
+  :root { --bg:#fff; --fg:#1d2330; --muted:#5d6678; --line:#d9dde5; --card:#f6f7f9; --accent:#2457d6; --bad:#b3261e; --good:#1b7a3b; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#14171d; --fg:#e6e9ef; --muted:#9aa3b5; --line:#2c323d; --card:#1b1f27; --accent:#7aa2ff; --bad:#ff8a80; --good:#6fd28d; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.45 system-ui, sans-serif; }
+  main { max-width: 920px; margin: 0 auto; padding: 20px 16px 80px; }
+  h1 { font-size: 20px; margin: 0 0 4px; } h2 { font-size: 16px; margin: 28px 0 8px; }
+  p, .muted { color: var(--muted); margin: 4px 0 10px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:14px; margin:10px 0; }
+  table { width:100%; border-collapse:collapse; font-size:14px; } th,td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:500; } td.ua { word-break:break-all; max-width:360px; }
+  label { display:block; font-size:13px; color:var(--muted); margin:8px 0 2px; }
+  input, select, textarea { width:100%; font:inherit; color:var(--fg); background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:6px 8px; }
+  textarea { min-height:60px; font-family: ui-monospace, monospace; font-size:13px; }
+  input[type=checkbox] { width:auto; margin-right:6px; } .check { display:flex; align-items:center; margin-top:10px; color:var(--fg); font-size:14px; }
+  .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap:0 12px; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  button { font:inherit; border:1px solid var(--line); background:var(--bg); color:var(--fg); border-radius:6px; padding:6px 12px; cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; } button.danger { color:var(--bad); }
+  .bar { position:sticky; bottom:0; background:var(--bg); border-top:1px solid var(--line); padding:10px 16px; }
+  .bar .inner { max-width:888px; margin:0 auto; display:flex; gap:12px; align-items:center; }
+  .ok { color:var(--good); } .err { color:var(--bad); } .tag { font-size:12px; color:var(--muted); border:1px solid var(--line); border-radius:10px; padding:0 8px; }
+</style>
+</head>
+<body>
+<main>
+  <h1 id="title">DLNA bridge</h1>
+  <p id="status" class="muted">Loading…</p>
+
+  <h2>Clients that have connected</h2>
+  <p>Devices that browsed or played through the bridge. Pick one to make a client from it.</p>
+  <div class="card"><table id="seen"></table></div>
+
+  <h2>Playing now through the bridge</h2>
+  <div class="card"><table id="jobs"></table></div>
+
+  <h2>Default</h2>
+  <p>For any client that matches none of the clients below.</p>
+  <div id="default"></div>
+
+  <h2>Clients</h2>
+  <p>The first client that fits wins. A request fits when its address is listed, or its User-Agent contains one of the texts.
+     A stream can also ask for a client by name with <code>?profile=NAME</code>, for a device that has no fixed address.</p>
+  <div id="clients"></div>
+  <button id="add">Add a client</button>
+
+  <h2>Limits</h2>
+  <div class="card"><label for="max">Conversions at once, across all clients</label><input id="max" type="number" min="1" max="64" style="max-width:120px"></div>
+</main>
+<div class="bar"><div class="inner"><button class="primary" id="save">Save</button><span id="msg"></span></div></div>
+
+<script>
+let cfg = null, defaults = null, saved = true;
+const $ = (id) => document.getElementById(id);
+const el = (tag, attrs = {}, ...kids) => { const e = document.createElement(tag); for (const [k, v] of Object.entries(attrs)) k === 'on' ? Object.entries(v).forEach(([ev, f]) => e.addEventListener(ev, f)) : e.setAttribute(k, v); kids.flat().forEach(c => e.append(c)); return e; };
+const lines = (s) => s.split('\n').map(x => x.trim()).filter(Boolean);
+
+function field(label, input) { return el('div', {}, el('label', {}, label), input); }
+function num(obj, key, min, max) { return el('input', { type: 'number', min, max, value: obj[key], on: { input: e => obj[key] = +e.target.value } }); }
+function sel(obj, key, opts, after) { return el('select', { on: { change: e => { obj[key] = e.target.value; after && after(); } } }, opts.map(([v, t]) => { const o = el('option', { value: v }, t); if (obj[key] === v) o.selected = true; return o; })); }
+
+function profileForm(p, rerender) {
+  const box = el('div');
+  box.append(el('div', { class: 'grid' },
+    field('Streams', sel(p, 'mode', [['direct', 'Direct from the DVR'], ['proxy', 'Through the bridge'], ['transcode', 'Converted (ffmpeg)']], rerender)),
+    field('Commercials', sel(p, 'ads', [['cut', 'Cut out'], ['keep', 'Play (pass through)']]))));
+  if (p.mode === 'transcode') {
+    const t = p.transcode;
+    box.append(el('div', { class: 'grid' },
+      field('Largest width', num(t, 'max_width', 16, 7680)), field('Largest height', num(t, 'max_height', 16, 4320)),
+      field('Frames per second', num(t, 'fps', 1, 120)), field('Video kbps', num(t, 'video_kbps', 16, 100000)),
+      field('Audio kbps', num(t, 'audio_kbps', 8, 640)), field('Audio channels', num(t, 'audio_channels', 1, 6)),
+      field('H.264 profile', sel(t, 'h264_profile', [['baseline', 'Baseline'], ['main', 'Main'], ['high', 'High']]))));
+    box.append(el('label', { class: 'check' }, el('input', { type: 'checkbox', ...(t.pre_scale ? { checked: '' } : {}), on: { change: e => t.pre_scale = e.target.checked } }),
+      'Have the DVR make a small stream first for live channels (cheaper than decoding the full picture here)'));
+  }
+  return box;
+}
+
+function render() {
+  $('max').value = cfg.max_transcodes;
+  const d = $('default'); d.replaceChildren(el('div', { class: 'card' }, profileForm(cfg.default, render)));
+  const c = $('clients'); c.replaceChildren();
+  cfg.clients.forEach((cl, i) => c.append(el('div', { class: 'card' },
+    el('div', { class: 'row' }, el('div', { style: 'flex:1' }, field('Name', el('input', { value: cl.name, on: { input: e => cl.name = e.target.value } }))),
+      el('button', { class: 'danger', on: { click: () => { cfg.clients.splice(i, 1); render(); } } }, 'Remove')),
+    el('div', { class: 'grid' },
+      field('Addresses or ranges, one per line (10.0.0.7, 192.168.1.0/24)', el('textarea', { on: { input: e => cl.ips = lines(e.target.value) } }, (cl.ips || []).join('\n'))),
+      field('User-Agent contains, one per line', el('textarea', { on: { input: e => cl.user_agents = lines(e.target.value) } }, (cl.user_agents || []).join('\n')))),
+    profileForm(cl.profile, render))));
+  renderSeen();
+}
+
+function ago(t) { const s = Math.max(0, (Date.now() - new Date(t)) / 1000); return s < 90 ? Math.round(s) + ' s ago' : s < 5400 ? Math.round(s / 60) + ' min ago' : Math.round(s / 3600) + ' h ago'; }
+let lastState = null;
+function renderSeen() {
+  const st = lastState; if (!st) return;
+  const rows = st.clients.map(c => el('tr', {}, el('td', {}, c.ip), el('td', { class: 'ua' }, c.user_agent || '(none)'),
+    el('td', {}, c.profile || el('span', { class: 'tag' }, 'default')), el('td', {}, ago(c.last)),
+    el('td', {}, el('button', { on: { click: () => addFrom(c) } }, 'Make a client'))));
+  $('seen').replaceChildren(el('tr', {}, ['Address', 'User-Agent', 'Profile', 'Last seen', ''].map(h => el('th', {}, h))), ...rows);
+  if (!rows.length) $('seen').append(el('tr', {}, el('td', { colspan: 5, class: 'muted' }, 'None yet. Browse the server from a TV.')));
+  const jr = st.jobs.map(j => el('tr', {}, el('td', {}, j.ip), el('td', {}, j.client || 'default'), el('td', {}, j.what), el('td', {}, ago(j.since).replace(' ago', ''))));
+  $('jobs').replaceChildren(el('tr', {}, ['Address', 'Profile', 'Playing', 'For'].map(h => el('th', {}, h))), ...jr);
+  if (!jr.length) $('jobs').append(el('tr', {}, el('td', { colspan: 4, class: 'muted' }, 'Nothing is being converted.')));
+}
+
+function addFrom(c) {
+  cfg.clients.push({ name: 'New client', ips: [c.ip], user_agents: [], profile: JSON.parse(JSON.stringify({ ...cfg.default, transcode: cfg.default.transcode.max_width ? cfg.default.transcode : defaults })) });
+  render(); $('clients').lastChild.scrollIntoView({ behavior: 'smooth' });
+}
+
+async function load(keepEdits) {
+  const st = await (await fetch('api/state')).json();
+  lastState = st; defaults = st.transcode_defaults; saved = st.saved;
+  $('title').textContent = st.name + ' · DLNA bridge ' + st.version;
+  $('status').textContent = st.dvr_error ? 'Cannot reach the DVR at ' + st.dvr + ': ' + st.dvr_error
+    : 'DVR at ' + st.dvr + ' · ' + st.channels + ' channels · ' + st.recordings + ' recordings' + (saved ? '' : ' · settings are not kept in a file (no state directory)');
+  if (!keepEdits) { cfg = st.config; render(); } else renderSeen();
+}
+
+$('add').onclick = () => { cfg.clients.push({ name: 'New client', ips: [], user_agents: [], profile: { mode: 'transcode', ads: 'cut', transcode: JSON.parse(JSON.stringify(defaults)) } }); render(); $('clients').lastChild.scrollIntoView({ behavior: 'smooth' }); };
+$('max').oninput = e => cfg.max_transcodes = +e.target.value;
+$('save').onclick = async () => {
+  const m = $('msg'); m.className = ''; m.textContent = 'Saving…';
+  const r = await fetch('api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg) });
+  const j = await r.json();
+  if (!r.ok) { m.className = 'err'; m.textContent = j.error; return; }
+  cfg = j.config; render(); m.className = 'ok'; m.textContent = saved ? 'Saved. Takes effect the next time a TV browses.' : 'Applied, but not kept after a restart.';
+};
+load(false); setInterval(() => load(true).catch(() => {}), 5000);
+</script>
+</body>
+</html>

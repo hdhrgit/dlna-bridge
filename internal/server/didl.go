@@ -31,15 +31,17 @@ type object struct {
 // and DLNA 1.5. Live streams cannot seek (OP=00); recordings take byte ranges
 // (OP=01).
 const (
-	dlnaFlags     = "DLNA.ORG_FLAGS=01700000000000000000000000000000"
-	liveFeatures  = "DLNA.ORG_OP=00;DLNA.ORG_CI=0;" + dlnaFlags
-	recFeatures   = "DLNA.ORG_OP=01;DLNA.ORG_CI=0;" + dlnaFlags
-	videoMIME     = "video/mpeg"
-	liveProtocol  = "http-get:*:" + videoMIME + ":" + liveFeatures
-	recProtocol   = "http-get:*:" + videoMIME + ":" + recFeatures
-	tinyMIME      = "video/mp2t"
-	classLive     = "object.item.videoItem.videoBroadcast"
-	classRecorded = "object.item.videoItem"
+	dlnaFlags    = "DLNA.ORG_FLAGS=01700000000000000000000000000000"
+	liveFeatures = "DLNA.ORG_OP=00;DLNA.ORG_CI=0;" + dlnaFlags
+	recFeatures  = "DLNA.ORG_OP=01;DLNA.ORG_CI=0;" + dlnaFlags
+	videoMIME    = "video/mpeg"
+	liveProtocol = "http-get:*:" + videoMIME + ":" + liveFeatures
+	recProtocol  = "http-get:*:" + videoMIME + ":" + recFeatures
+	tsMIME       = "video/mp2t"
+	// A converted stream is a live MPEG-TS: no length, no seeking.
+	transcodeProtocol = "http-get:*:" + tsMIME + ":DLNA.ORG_OP=00;DLNA.ORG_CI=1;" + dlnaFlags
+	classLive         = "object.item.videoItem.videoBroadcast"
+	classRecorded     = "object.item.videoItem"
 )
 
 const didlOpen = `<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/" xmlns:sec="http://www.sec.co.kr/">`

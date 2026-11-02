@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"encoding/xml"
 	"io"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"dlna/internal/config"
 	"dlna/internal/dvr"
 )
 
@@ -18,17 +20,18 @@ import (
 func fakeDVR(t *testing.T) *httptest.Server {
 	now := time.Now().Unix()
 	bodies := map[string]string{
-		"/api/v1/channels": `[{"id":"cspan.house","name":"C-SPAN House Floor","number":"5000","logo_url":"http://x/logo.png","hd":true,"favorited":true},
+		"/api/v1/channels": `[{"id":"cspan.house","name":"C-SPAN House Floor","number":"5000","logo_url":"http://x/logo.png","hd":true,"favorited":true,"source_name":"Tuner A","source_id":"A1"},
 			{"id":"hid","name":"Hidden","number":"9","hidden":true},
-			{"id":"reuters","name":"Reuters & Co","number":"5002","logo_url":"","hd":true},
-			{"id":"dup","name":"Duplicate","number":"5002"},
-			{"id":"sub","name":"Subchannel","number":"4.1"}]`,
+			{"id":"reuters","name":"Reuters & Co","number":"5002","logo_url":"","hd":true,"source_name":"FAST","source_id":"F1"},
+			{"id":"dup","name":"Duplicate","number":"5002","source_name":"Tuner A","source_id":"A1"},
+			{"id":"sub","name":"Subchannel","number":"4.1","source_name":"Tuner A","source_id":"A1"}]`,
 		"/devices/ANY/guide/now": `[{"Airings":[{"Channel":"5002","Time":` + itoa(now-60) + `,"Duration":3600,"Title":"Evening News"}],"Channel":{"Number":"5002"}}]`,
-		"/dvr/files": `[{"ID":"17","GroupID":"g1","Airing":{"Title":"Nova","EpisodeTitle":"Black Holes","SeasonNumber":3,"EpisodeNumber":4,"Image":"http://x/nova.jpg"},"Duration":3605.5,"CreatedAt":1793500000,"PlaybackTime":120},
+		"/dvr/files": `[{"ID":"17","GroupID":"g1","Airing":{"Title":"Nova","EpisodeTitle":"Black Holes","SeasonNumber":3,"EpisodeNumber":4,"Image":"http://x/nova.jpg"},"Duration":3605.5,"CreatedAt":1793500000,"PlaybackTime":120,"Completed":true},
 			{"ID":18,"GroupID":"g1","Airing":{"Title":"Nova"},"Duration":60,"CreatedAt":1793600000000,"Completed":true,"Processed":true,"FileSize":1000,"Commercials":[10,20,50,70],"PlaybackTime":30},
-			{"ID":"19","Airing":{"Title":"Loose"},"Duration":60,"CreatedAt":1793600000000},
-			{"ID":"20","GroupID":"g1","Deleted":true}]`,
-		"/dvr/groups": `[{"ID":"g1","Name":"Nova","Image":"http://x/nova.jpg"}]`,
+			{"ID":"19","Airing":{"Title":"Loose"},"Duration":60,"CreatedAt":1793600000000,"Completed":true},
+			{"ID":"20","GroupID":"g1","Deleted":true},
+			{"ID":"21","GroupID":"g2","Airing":{"Title":"Live Show"},"CreatedAt":1793600000}]`,
+		"/dvr/groups": `[{"ID":"g1","Name":"Nova","Image":"http://x/nova.jpg"},{"ID":"g2","Name":"Live Show"}]`,
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, ok := bodies[r.URL.Path]
@@ -45,13 +48,25 @@ func fakeDVR(t *testing.T) *httptest.Server {
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
 
 func newTestServer(t *testing.T, proxy bool) *httptest.Server {
+	mode := config.ModeDirect
+	if proxy {
+		mode = config.ModeProxy
+	}
+	return newServerWith(t, config.Config{Default: config.Profile{Mode: mode, Ads: config.AdsCut}})
+}
+
+func newServerWith(t *testing.T, start config.Config) *httptest.Server {
 	d := fakeDVR(t)
 	c, err := dvr.New(strings.Replace(d.URL, "127.0.0.1", "localhost", 1))
 	if err != nil {
 		t.Fatal(err)
 	}
 	b, _ := OpenBookmarks("")
-	s := httptest.NewServer(New(Config{Name: "Test DVR", UUID: "u-1", Version: "t", DVR: c, Proxy: proxy, Bookmarks: b}).Handler())
+	settings, err := config.Open("", start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := httptest.NewServer(New(Config{Name: "Test DVR", UUID: "u-1", Version: "t", DVR: c, Settings: settings, Bookmarks: b}).Handler())
 	t.Cleanup(s.Close)
 	return s
 }
@@ -116,7 +131,7 @@ func browse(t *testing.T, base, id, flag string, start, count int) (browseResult
 func TestBrowseRoot(t *testing.T) {
 	s := newTestServer(t, false)
 	br, d := browse(t, s.URL, "0", "BrowseDirectChildren", 0, 0)
-	if br.TotalMatches != 3 || len(d.Containers) != 3 {
+	if br.TotalMatches != 5 || len(d.Containers) != 5 {
 		t.Fatalf("root: %+v", d)
 	}
 	if d.Containers[0].Title != "Live TV" || d.Containers[0].ChildCount != 3 {
@@ -125,8 +140,14 @@ func TestBrowseRoot(t *testing.T) {
 	if d.Containers[1].Title != "Favorites" || d.Containers[1].ChildCount != 1 {
 		t.Errorf("favorites folder: %+v", d.Containers[1])
 	}
-	if d.Containers[2].Title != "Recordings" || d.Containers[2].ChildCount != 2 {
-		t.Errorf("recordings folder: %+v", d.Containers[2])
+	if d.Containers[2].Title != "Channels by source" || d.Containers[2].ChildCount != 2 {
+		t.Errorf("sources folder: %+v", d.Containers[2])
+	}
+	if d.Containers[3].Title != "Recordings" || d.Containers[3].ChildCount != 3 {
+		t.Errorf("recordings folder: %+v", d.Containers[3])
+	}
+	if d.Containers[4].Title != "Recording now" || d.Containers[4].ChildCount != 1 {
+		t.Errorf("recording now folder: %+v", d.Containers[4])
 	}
 	_, meta := browse(t, s.URL, "0", "BrowseMetadata", 0, 0)
 	if len(meta.Containers) != 1 || meta.Containers[0].Title != "Test DVR" {
@@ -174,7 +195,7 @@ func TestBrowseFavorites(t *testing.T) {
 func TestBrowseRecordings(t *testing.T) {
 	s := newTestServer(t, true)
 	_, d := browse(t, s.URL, "rec", "BrowseDirectChildren", 0, 0)
-	if len(d.Containers) != 2 || d.Containers[0].Title != "Loose" || d.Containers[1].Title != "Nova" || d.Containers[1].ChildCount != 2 {
+	if len(d.Containers) != 3 || d.Containers[0].Title != "Live Show" || d.Containers[1].Title != "Loose" || d.Containers[2].Title != "Nova" || d.Containers[2].ChildCount != 2 {
 		t.Fatalf("folders: %+v", d.Containers)
 	}
 	_, d = browse(t, s.URL, "recgroup/g1", "BrowseDirectChildren", 0, 0)
@@ -284,20 +305,141 @@ func TestSubscribe(t *testing.T) {
 	}
 }
 
-func TestTinyPlaylist(t *testing.T) {
+func TestPlaylist(t *testing.T) {
 	s := newTestServer(t, false)
-	resp, err := http.Get(s.URL + "/tiny/channels.m3u")
+	resp, err := http.Get(s.URL + "/channels.m3u?profile=Tiny+TV")
 	if err != nil {
 		t.Fatal(err)
 	}
 	b, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if !strings.Contains(string(b), "/tiny/5002.ts") || !strings.HasPrefix(string(b), "#EXTM3U\n") {
+	if !strings.Contains(string(b), "/stream/live/5002?profile=Tiny+TV\n") || !strings.HasPrefix(string(b), "#EXTM3U\n") {
 		t.Errorf("playlist:\n%s", b)
 	}
-	resp, _ = http.Get(s.URL + "/tiny/9999.ts")
+}
+
+func TestBrowseSources(t *testing.T) {
+	s := newTestServer(t, false)
+	_, d := browse(t, s.URL, "sources", "BrowseDirectChildren", 0, 0)
+	if len(d.Containers) != 2 || d.Containers[0].Title != "FAST" || d.Containers[1].Title != "Tuner A" || d.Containers[1].ChildCount != 3 {
+		t.Fatalf("sources: %+v", d.Containers)
+	}
+	_, d = browse(t, s.URL, "src/Tuner%20A", "BrowseDirectChildren", 0, 0)
+	if len(d.Items) != 3 || d.Items[1].ID != "srcch/Tuner%20A/5000" {
+		t.Fatalf("Tuner A: %+v", d.Items)
+	}
+	// Played from that source, not whichever the DVR picks.
+	if !strings.HasSuffix(d.Items[2].Res.URL, "/devices/A1/channels/5002/stream.mpg") {
+		t.Errorf("source stream URL %q", d.Items[2].Res.URL)
+	}
+	_, m := browse(t, s.URL, d.Items[1].ID, "BrowseMetadata", 0, 0)
+	if len(m.Items) != 1 {
+		t.Errorf("metadata: %+v", m)
+	}
+}
+
+func TestRecordingNow(t *testing.T) {
+	s := newTestServer(t, false)
+	_, d := browse(t, s.URL, "recnow", "BrowseDirectChildren", 0, 0)
+	if len(d.Items) != 1 || d.Items[0].ID != "recnow/21" || !strings.HasPrefix(d.Items[0].Title, "Live Show ") {
+		t.Fatalf("recording now: %+v", d.Items)
+	}
+	if !strings.HasSuffix(d.Items[0].Res.URL, "/dvr/files/21/stream.mpg") {
+		t.Errorf("URL %q", d.Items[0].Res.URL)
+	}
+}
+
+// Clients get the profile that fits them: the tiny one is converted, another
+// plays commercials, and a client asking by name gets that one.
+func TestProfiles(t *testing.T) {
+	start := config.Config{
+		Default: config.Profile{Mode: config.ModeDirect, Ads: config.AdsCut},
+		Clients: []config.Client{
+			{Name: "Tiny", IPs: []string{"127.0.0.1"}, Profile: config.Profile{Mode: config.ModeTranscode, Ads: config.AdsCut, Transcode: config.DefaultTranscode()}},
+			{Name: "Ads", UserAgents: []string{"AdLover"}, Profile: config.Profile{Mode: config.ModeDirect, Ads: config.AdsKeep}},
+		},
+	}
+	s := newServerWith(t, start)
+	// Every request here comes from 127.0.0.1, so the first client fits it...
+	_, d := browse(t, s.URL, "live", "BrowseDirectChildren", 0, 0)
+	if got := d.Items[1].Res.URL; got != strings.TrimPrefix(s.URL, "")+"/stream/live/5000?profile=Tiny" {
+		t.Errorf("converted URL %q", got)
+	}
+	if !strings.Contains(d.Items[1].Res.Protocol, "video/mp2t") || !strings.Contains(d.Items[1].Res.Protocol, "OP=00") {
+		t.Errorf("converted protocol %q", d.Items[1].Res.Protocol)
+	}
+	_, d = browse(t, s.URL, "recgroup/g1", "BrowseDirectChildren", 0, 0)
+	if got := d.Items[0].Res.URL; got != s.URL+"/stream/adfree/18?profile=Tiny" {
+		t.Errorf("converted recording URL %q", got)
+	}
+}
+
+func TestProfilesByUserAgent(t *testing.T) {
+	start := config.Config{
+		Default: config.Profile{Mode: config.ModeDirect, Ads: config.AdsCut},
+		Clients: []config.Client{{Name: "Ads", UserAgents: []string{"adlover"}, Profile: config.Profile{Mode: config.ModeDirect, Ads: config.AdsKeep}}},
+	}
+	s := newServerWith(t, start)
+	soapAs := func(ua string) browseResult {
+		body := `<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:Browse xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1"><ObjectID>recgroup/g1</ObjectID><BrowseFlag>BrowseDirectChildren</BrowseFlag><Filter>*</Filter><StartingIndex>0</StartingIndex><RequestedCount>0</RequestedCount><SortCriteria></SortCriteria></u:Browse></s:Body></s:Envelope>`
+		req, _ := http.NewRequest("POST", s.URL+"/ctl/ContentDirectory", strings.NewReader(body))
+		req.Header.Set("User-Agent", ua)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		out, _ := io.ReadAll(resp.Body)
+		var br browseResult
+		xml.Unmarshal(out, &br)
+		return br
+	}
+	cut, keep := soapAs("LG webOS"), soapAs("AdLover/1.0")
+	if !strings.Contains(cut.Result, "/stream/adfree/18") || strings.Contains(keep.Result, "/stream/adfree/18") {
+		t.Errorf("ads: cut client\n%s\nkeep client\n%s", cut.Result, keep.Result)
+	}
+	if !strings.Contains(keep.Result, "/dvr/files/18/stream.mpg") {
+		t.Errorf("keep client is not sent to the DVR's file:\n%s", keep.Result)
+	}
+}
+
+func TestSettingsAPI(t *testing.T) {
+	s := newTestServer(t, false)
+	put := func(contentType, body string) (int, string) {
+		req, _ := http.NewRequest("PUT", s.URL+"/api/config", strings.NewReader(body))
+		req.Header.Set("Content-Type", contentType)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(b)
+	}
+	if code, _ := put("text/plain", `{}`); code != 415 {
+		t.Errorf("form post accepted: %d", code)
+	}
+	if code, body := put("application/json", `{"default":{"mode":"fast"},"max_transcodes":2}`); code != 400 || !strings.Contains(body, "fast") {
+		t.Errorf("bad mode: %d %s", code, body)
+	}
+	if code, body := put("application/json", `{"default":{"mode":"proxy","ads":"keep"},"max_transcodes":3,"clients":[{"name":"A","ips":["10.1.1.1"],"profile":{"mode":"direct","ads":"cut"}}]}`); code != 200 {
+		t.Fatalf("save: %d %s", code, body)
+	}
+	resp, _ := http.Get(s.URL + "/api/state")
+	var st struct {
+		Config config.Config `json:"config"`
+		Name   string        `json:"name"`
+		Chans  int           `json:"channels"`
+	}
+	json.NewDecoder(resp.Body).Decode(&st)
 	resp.Body.Close()
-	if resp.StatusCode != 404 {
-		t.Errorf("unknown channel: %d", resp.StatusCode)
+	if st.Config.Default.Mode != "proxy" || len(st.Config.Clients) != 1 || st.Config.MaxTranscodes != 3 || st.Chans != 3 {
+		t.Errorf("state: %+v", st)
+	}
+	resp, _ = http.Get(s.URL + "/")
+	page, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(page), "DLNA bridge") || !strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
+		t.Error("no settings page")
 	}
 }

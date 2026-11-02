@@ -18,12 +18,13 @@ import (
 
 // Channel is one live channel, from /api/v1/channels.
 type Channel struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Number string `json:"number"`
-	Logo   string `json:"logo_url"`
-	HD     bool   `json:"hd"`
-	Source string `json:"source_name"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Number   string `json:"number"`
+	Logo     string `json:"logo_url"`
+	HD       bool   `json:"hd"`
+	Source   string `json:"source_name"`
+	SourceID string `json:"source_id"`
 	// Favorited and Hidden are the flags set in the Channels apps.
 	Favorited bool `json:"favorited"`
 	Hidden    bool `json:"hidden"`
@@ -157,31 +158,44 @@ func (c *Client) getJSON(ctx context.Context, path string, v any) error {
 	return nil
 }
 
-// Channels lists the live channels in number order, one per number.
-func (c *Client) Channels(ctx context.Context) ([]Channel, error) {
+// AllChannels lists the channels that are not hidden, in number order, a
+// number once for each source that carries it.
+func (c *Client) AllChannels(ctx context.Context) ([]Channel, error) {
 	return c.channels.get(time.Minute, func() ([]Channel, error) {
 		var all []Channel
 		if err := c.getJSON(ctx, "/api/v1/channels", &all); err != nil {
 			return nil, err
 		}
-		// Several sources can carry a number; the DVR picks one when it plays
-		// it, so list the number once, as a favorite if any of them is.
-		at := map[string]int{}
 		out := all[:0]
 		for _, ch := range all {
-			if ch.Number == "" || ch.Hidden {
-				continue
+			if ch.Number != "" && !ch.Hidden {
+				out = append(out, ch)
 			}
-			if i, ok := at[ch.Number]; ok {
-				out[i].Favorited = out[i].Favorited || ch.Favorited
-				continue
-			}
-			at[ch.Number] = len(out)
-			out = append(out, ch)
 		}
 		sort.SliceStable(out, func(i, j int) bool { return numberLess(out[i].Number, out[j].Number) })
 		return out, nil
 	})
+}
+
+// Channels lists the channels once for each number. Several sources can carry
+// a number; the DVR picks one when it plays it, so it counts as a favorite if
+// any of them is.
+func (c *Client) Channels(ctx context.Context) ([]Channel, error) {
+	all, err := c.AllChannels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	at := map[string]int{}
+	out := make([]Channel, 0, len(all))
+	for _, ch := range all {
+		if i, ok := at[ch.Number]; ok {
+			out[i].Favorited = out[i].Favorited || ch.Favorited
+			continue
+		}
+		at[ch.Number] = len(out)
+		out = append(out, ch)
+	}
+	return out, nil
 }
 
 // Channel finds a channel by its number.
@@ -263,9 +277,13 @@ func (c *Client) Groups(ctx context.Context) ([]Group, error) {
 	})
 }
 
-// LivePath is the DVR's own MPEG-TS stream of a channel, at full quality.
-func LivePath(number string) string {
-	return "/devices/ANY/channels/" + url.PathEscape(number) + "/stream.mpg"
+// LivePath is the DVR's own MPEG-TS stream of a channel, at full quality. device
+// is the source to take it from, or empty for whichever the DVR picks.
+func LivePath(device, number string) string {
+	if device == "" {
+		device = "ANY"
+	}
+	return "/devices/" + url.PathEscape(device) + "/channels/" + url.PathEscape(number) + "/stream.mpg"
 }
 
 // RecordingPath is the DVR's stream of a recorded file. It takes byte ranges.
@@ -330,14 +348,17 @@ func (f *File) Open(ctx context.Context, off, n int64) (io.ReadCloser, error) {
 
 // SmallStreamURL asks the DVR's transcoder for a small H.264/AAC HLS stream of
 // a channel. height must be even, and bitrate is the total in kbps.
-func (c *Client) SmallStreamURL(number string, height, kbps int) string {
+func (c *Client) SmallStreamURL(device, number string, height, kbps int) string {
+	if device == "" {
+		device = "ANY"
+	}
 	q := url.Values{}
 	q.Set("vcodec", "h264")
 	q.Set("acodec", "aac")
 	q.Set("resolution", strconv.Itoa(height))
 	q.Set("bitrate", strconv.Itoa(kbps))
 	q.Set("abitrate", "64")
-	return c.Base.String() + "/devices/ANY/channels/" + url.PathEscape(number) + "/hls/master.m3u8?" + q.Encode()
+	return c.Base.String() + "/devices/" + url.PathEscape(device) + "/channels/" + url.PathEscape(number) + "/hls/master.m3u8?" + q.Encode()
 }
 
 // numberLess orders channel numbers such as 5, 5.1 and 12 by value.
