@@ -39,6 +39,7 @@ func main() {
 	state := flag.String("state", envOr("DLNA_STATE", ""), "directory for bookmarks.json (default: keep bookmarks in memory)")
 	ffmpeg := flag.String("ffmpeg", envOr("DLNA_FFMPEG", "ffmpeg"), "ffmpeg for the tiny TV's streams")
 	maxTranscodes := flag.Int("max-transcodes", envInt("DLNA_MAX_TRANSCODES", 2), "first-run default: conversions at once")
+	debug := flag.Bool("debug", envBool("DLNA_DEBUG"), "log each SOAP request and the start of its response")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 	if *showVersion {
@@ -85,7 +86,7 @@ func main() {
 	srv := server.New(server.Config{
 		Name: *name, UUID: uuid, Version: version,
 		DVR: client, DVRPublic: *dvrPublic, Settings: settings, FFmpeg: *ffmpeg,
-		SelfURL: "http://127.0.0.1:" + portStr, Bookmarks: bookmarks,
+		SelfURL: "http://127.0.0.1:" + portStr, Debug: *debug, Bookmarks: bookmarks,
 		Logf: log.Printf,
 	})
 

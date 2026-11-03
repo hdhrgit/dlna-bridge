@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -81,12 +82,14 @@ func writeResponse(w http.ResponseWriter, service, name string, out [][2]string)
 	fmt.Fprintf(&b, `<u:%sResponse xmlns:u="%s">`, name, service)
 	for _, kv := range out {
 		b.WriteString("<" + kv[0] + ">")
-		xml.EscapeText(&b, []byte(kv[1]))
+		b.WriteString(escape(kv[1]))
 		b.WriteString("</" + kv[0] + ">")
 	}
 	fmt.Fprintf(&b, `</u:%sResponse></s:Body></s:Envelope>`, name)
 	w.Header().Set("Content-Type", `text/xml; charset="utf-8"`)
 	w.Header().Set("Ext", "")
+	// Not chunked: some TVs cannot read a chunked SOAP response.
+	w.Header().Set("Content-Length", strconv.Itoa(b.Len()))
 	w.Write(b.Bytes())
 }
 
@@ -97,8 +100,9 @@ func writeFault(w http.ResponseWriter, e *soapError) {
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><s:Fault><faultcode>s:Client</faultcode><faultstring>UPnPError</faultstring><detail><UPnPError xmlns="urn:schemas-upnp-org:control-1-0"><errorCode>%d</errorCode><errorDescription>%s</errorDescription></UPnPError></detail></s:Fault></s:Body></s:Envelope>`, e.Code, escape(e.Desc))
 }
 
-func escape(s string) string {
-	var b strings.Builder
-	xml.EscapeText(&b, []byte(s))
-	return b.String()
-}
+// xmlEscaper writes the five predefined entities and nothing else. Go's own
+// escaper writes numeric references (&#34;), which some TVs' XML parsers do not
+// read.
+var xmlEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;", "'", "&apos;", "\r", " ", "\n", " ")
+
+func escape(s string) string { return xmlEscaper.Replace(s) }

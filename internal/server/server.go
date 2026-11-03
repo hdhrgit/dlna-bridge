@@ -4,6 +4,7 @@
 package server
 
 import (
+	"bytes"
 	"io"
 	"net/http"
 	"strconv"
@@ -33,7 +34,9 @@ type Config struct {
 	// it reads back from here.
 	SelfURL   string
 	Bookmarks *Bookmarks
-	Logf      func(format string, a ...any)
+	// Debug logs each SOAP request and the start of its response.
+	Debug bool
+	Logf  func(format string, a ...any)
 }
 
 type Server struct {
@@ -102,6 +105,12 @@ func (s *Server) description(w http.ResponseWriter, r *http.Request) {
 // --- ContentDirectory
 
 func (s *Server) contentDirectory(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.Debug {
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 64<<10))
+		s.cfg.Logf("debug: %s request from %s (%s): %s", r.URL.Path, r.RemoteAddr, r.Header.Get("SOAPAction"), body)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		w = &recorder{ResponseWriter: w, logf: s.cfg.Logf, to: r.RemoteAddr}
+	}
 	a, err := readAction(r.Body)
 	if err != nil {
 		writeFault(w, errInvalidAction)
@@ -255,3 +264,33 @@ func serverHeader(version string) string {
 
 // ServerHeader is the SERVER header for SSDP too.
 func ServerHeader(version string) string { return serverHeader(version) }
+
+// recorder logs the status and the start of a response.
+type recorder struct {
+	http.ResponseWriter
+	logf   func(string, ...any)
+	to     string
+	status int
+	logged bool
+}
+
+func (r *recorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *recorder) Write(b []byte) (int, error) {
+	if !r.logged {
+		r.logged = true
+		status := r.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		head := b
+		if len(head) > 1500 {
+			head = head[:1500]
+		}
+		r.logf("debug: response to %s: %d, %d bytes, %v: %s", r.to, status, len(b), r.Header(), head)
+	}
+	return r.ResponseWriter.Write(b)
+}
