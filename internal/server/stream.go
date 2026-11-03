@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"dlna/internal/config"
@@ -53,13 +54,29 @@ func (s *Server) streamRecording(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) proxy(w http.ResponseWriter, r *http.Request, dvrPath, features string) {
-	req, err := http.NewRequestWithContext(r.Context(), r.Method, s.cfg.DVR.Base.String()+dvrPath, nil)
+	method := r.Method
+	rg := r.Header.Get("Range")
+	if method == http.MethodHead {
+		// The DVR refuses HEAD on its streams, and a TV that is refused will not
+		// play. Answer as the stream would: for a recording ask the DVR for its
+		// first byte to learn the length; a live stream has none.
+		method = http.MethodGet
+		rg = ""
+		if features == recFeatures {
+			rg = "bytes=0-0"
+		}
+	}
+	req, err := http.NewRequestWithContext(r.Context(), method, s.cfg.DVR.Base.String()+dvrPath, nil)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if rg := r.Header.Get("Range"); rg != "" {
+	if rg != "" {
 		req.Header.Set("Range", rg)
+	}
+	if r.Method == http.MethodHead && features != recFeatures {
+		s.dlnaHeaders(w, features)
+		return
 	}
 	// No client timeout: a stream runs as long as the TV watches.
 	resp, err := http.DefaultTransport.RoundTrip(req)
@@ -68,16 +85,30 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, dvrPath, features
 		return
 	}
 	defer resp.Body.Close()
+	s.dlnaHeaders(w, features)
+	if r.Method == http.MethodHead {
+		// Content-Range is "bytes 0-0/<length>"; the HEAD answer is the whole file.
+		if _, total, ok := strings.Cut(resp.Header.Get("Content-Range"), "/"); ok && total != "*" {
+			w.Header().Set("Content-Length", total)
+			w.Header().Set("Accept-Ranges", "bytes")
+			return
+		}
+		w.WriteHeader(resp.StatusCode)
+		return
+	}
 	for _, h := range []string{"Content-Length", "Content-Range", "Accept-Ranges"} {
 		if v := resp.Header.Get(h); v != "" {
 			w.Header().Set(h, v)
 		}
 	}
+	w.WriteHeader(resp.StatusCode)
+	copyFlushing(w, resp.Body)
+}
+
+func (s *Server) dlnaHeaders(w http.ResponseWriter, features string) {
 	w.Header().Set("Content-Type", videoMIME)
 	w.Header().Set("TransferMode.DLNA.ORG", "Streaming")
 	w.Header().Set("ContentFeatures.DLNA.ORG", features)
-	w.WriteHeader(resp.StatusCode)
-	copyFlushing(w, resp.Body)
 }
 
 // copyFlushing copies a stream, flushing as it goes so a live stream does not

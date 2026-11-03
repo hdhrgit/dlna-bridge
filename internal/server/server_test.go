@@ -34,6 +34,16 @@ func fakeDVR(t *testing.T) *httptest.Server {
 		"/dvr/groups": `[{"ID":"g1","Name":"Nova","Image":"http://x/nova.jpg"},{"ID":"g2","Name":"Live Show"}]`,
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/dvr/files/17/stream.mpg" { // like the DVR: no HEAD, ranges answer 206
+			if r.Method == http.MethodHead {
+				http.Error(w, "no", http.StatusMethodNotAllowed)
+				return
+			}
+			w.Header().Set("Content-Range", "bytes 0-0/123456")
+			w.WriteHeader(http.StatusPartialContent)
+			w.Write([]byte{0x47})
+			return
+		}
 		b, ok := bodies[r.URL.Path]
 		if !ok {
 			http.NotFound(w, r)
@@ -441,5 +451,27 @@ func TestSettingsAPI(t *testing.T) {
 	resp.Body.Close()
 	if !strings.Contains(string(page), "DLNA bridge") || !strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
 		t.Error("no settings page")
+	}
+}
+
+// A TV that asks for a stream's headers first is answered as the stream would,
+// though the DVR refuses HEAD.
+func TestHeadOnStreams(t *testing.T) {
+	s := newTestServer(t, true)
+	head := func(path string) *http.Response {
+		resp, err := http.Head(s.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp
+	}
+	live := head("/stream/live/5000")
+	if live.StatusCode != 200 || live.Header.Get("TransferMode.DLNA.ORG") != "Streaming" || live.Header.Get("Content-Type") != "video/mpeg" {
+		t.Errorf("live: %d %v", live.StatusCode, live.Header)
+	}
+	rec := head("/stream/rec/17")
+	if rec.StatusCode != 200 || rec.Header.Get("Content-Length") != "123456" || rec.Header.Get("Accept-Ranges") != "bytes" {
+		t.Errorf("recording: %d %v", rec.StatusCode, rec.Header)
 	}
 }
