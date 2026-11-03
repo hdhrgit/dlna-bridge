@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"dlna/internal/config"
@@ -81,25 +82,74 @@ func (s *Server) transcode(w http.ResponseWriter, r *http.Request, t config.Tran
 	}
 	defer s.jobs.end(id)
 
-	cmd := exec.CommandContext(r.Context(), s.cfg.FFmpeg, ffmpegArgs(t, input)...)
+	started := time.Now()
+	s.cfg.Logf("transcode: %s to %s (%s)", what, ip, client)
+	args := ffmpegArgs(t, input)
+	for try := 1; ; try++ {
+		sent, msg, err := s.runFFmpeg(w, r, args)
+		s.cfg.Logf("transcode: %s to %s ended after %s: %v %s", what, ip, time.Since(started).Round(time.Second), err, msg)
+		// The DVR's small stream sometimes fails to start, and ffmpeg is
+		// stopped after startLimit. The client has had nothing yet, so it is
+		// still waiting: try once more.
+		if sent > 0 || try == 2 || r.Context().Err() != nil {
+			return
+		}
+		s.cfg.Logf("transcode: %s gave nothing, trying again", what)
+	}
+}
+
+// startLimit is how long ffmpeg may take to give its first bytes. The DVR's
+// small stream takes 6 to 15 s to start; when it fails, ffmpeg waits on.
+const startLimit = 20 * time.Second
+
+// stallLimit is how long a write to the client may block. A device that
+// stops reading but keeps its connection would otherwise hold a conversion.
+const stallLimit = 20 * time.Second
+
+// runFFmpeg runs one ffmpeg and copies its output to w until either ends. It
+// returns the bytes sent and the end of ffmpeg's error output.
+func (s *Server) runFFmpeg(w http.ResponseWriter, r *http.Request, args []string) (int64, string, error) {
+	cmd := exec.CommandContext(r.Context(), s.cfg.FFmpeg, args...)
 	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 	cmd.WaitDelay = 3 * time.Second
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.StdoutPipe()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return 0, "", err
 	}
 	if err := cmd.Start(); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return 0, "", err
 	}
-	started := time.Now()
-	s.cfg.Logf("transcode: %s to %s (%s)", what, ip, client)
-	copyFlushing(w, out)
-	// The viewer left, or ffmpeg already ended. Closing the pipe first stops an
-	// ffmpeg blocked on writing to it.
+	var started atomic.Bool
+	timer := time.AfterFunc(startLimit, func() {
+		if !started.Load() {
+			cmd.Process.Kill()
+		}
+	})
+	defer timer.Stop()
+	rc := http.NewResponseController(w)
+	buf := make([]byte, 64<<10)
+	var sent int64
+	for {
+		n, rerr := out.Read(buf)
+		if n > 0 {
+			started.Store(true)
+			rc.SetWriteDeadline(time.Now().Add(stallLimit))
+			if _, werr := w.Write(buf[:n]); werr != nil {
+				break
+			}
+			if rc.Flush() != nil {
+				break
+			}
+			sent += int64(n)
+		}
+		if rerr != nil {
+			break
+		}
+	}
+	// The viewer left or stalled, or ffmpeg already ended. Closing the pipe
+	// first stops an ffmpeg blocked on writing to it.
 	out.Close()
 	cmd.Process.Signal(os.Interrupt)
 	err = cmd.Wait()
@@ -107,7 +157,7 @@ func (s *Server) transcode(w http.ResponseWriter, r *http.Request, t config.Tran
 	if len(msg) > 500 {
 		msg = msg[len(msg)-500:]
 	}
-	s.cfg.Logf("transcode: %s to %s ended after %s: %v %s", what, ip, time.Since(started).Round(time.Second), err, msg)
+	return sent, msg, err
 }
 
 // playlist lists every channel's stream, for players that take an M3U. The

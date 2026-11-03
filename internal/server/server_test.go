@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -493,5 +495,26 @@ func TestFFmpegArgs(t *testing.T) {
 		if !strings.Contains(args, want) {
 			t.Errorf("board: no %q in %s", want, args)
 		}
+	}
+}
+
+// An ffmpeg that ends with nothing, as when the DVR's small stream fails to
+// start, is run once more while the client waits.
+func TestTranscodeRetries(t *testing.T) {
+	dir := t.TempDir()
+	ff := filepath.Join(dir, "ffmpeg")
+	script := "#!/bin/sh\nif [ -e " + dir + "/ran ]; then echo picture; else touch " + dir + "/ran; exit 1; fi\n"
+	if err := os.WriteFile(ff, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	settings, _ := config.Open("", config.Config{})
+	s := New(Config{FFmpeg: ff, Settings: settings})
+	w := httptest.NewRecorder()
+	s.transcode(w, httptest.NewRequest("GET", "/stream/live/1", nil), config.DefaultTranscode(), "Tiny", "1", "in")
+	if got := w.Body.String(); got != "picture\n" {
+		t.Errorf("got %q", got)
+	}
+	if len(s.jobs.list()) != 0 {
+		t.Error("the job was left running")
 	}
 }
