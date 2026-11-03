@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"dlna/internal/config"
 	"dlna/internal/dvr"
@@ -244,6 +245,8 @@ func (s *Server) channelObject(v view, ch dvr.Channel, id, parent, device, show 
 	return object{
 		ID: id, Parent: parent, Title: title, Class: classLive,
 		URL: res.url, Protocol: res.protocol, Art: ch.Logo, ChannelNr: ch.Number, ChannelName: ch.Name,
+		// A Samsung shows an item without a date as 1969.
+		Date: time.Now(),
 	}
 }
 
