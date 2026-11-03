@@ -13,6 +13,7 @@ func TestMatch(t *testing.T) {
 		Clients: []Client{
 			{Name: "Tiny", IPs: []string{"10.0.0.7", "192.168.5.0/24"}, Profile: Profile{Mode: ModeTranscode}},
 			{Name: "Samsung", UserAgents: []string{"samsung"}, Profile: Profile{Mode: ModeProxy}},
+			{Name: "Board", Profile: Profile{Mode: ModeTranscode}}, // by name only
 		},
 	}
 	for _, tc := range []struct{ ip, ua, forced, want string }{
@@ -22,6 +23,7 @@ func TestMatch(t *testing.T) {
 		{"10.0.0.8", "LG webOS", "", ""},
 		{"10.0.0.8", "LG webOS", "samsung", "Samsung"}, // forced by name, any case
 		{"10.0.0.8", "LG webOS", "nobody", ""},
+		{"10.0.0.8", "LG webOS", "board", "Board"},
 	} {
 		if got, _ := c.Match(net.ParseIP(tc.ip), tc.ua, tc.forced); got != tc.want {
 			t.Errorf("%+v: matched %q", tc, got)
@@ -35,9 +37,15 @@ func TestValidate(t *testing.T) {
 	if err := good.Validate(); err != nil {
 		t.Fatal(err)
 	}
+	named := clone(good)
+	named.Clients[0].IPs = nil // used only by ?profile=
+	named.Clients[0].Profile.Transcode.Crop = "4:3"
+	if err := named.Validate(); err != nil {
+		t.Errorf("name-only client with a crop: %v", err)
+	}
 	for name, edit := range map[string]func(*Config){
 		"mode":        func(c *Config) { c.Default.Mode = "fast" },
-		"no match":    func(c *Config) { c.Clients[0].IPs = nil },
+		"crop":        func(c *Config) { c.Clients[0].Profile.Transcode.Crop = "wide" },
 		"bad address": func(c *Config) { c.Clients[0].IPs = []string{"10.0.0"} },
 		"duplicate": func(c *Config) {
 			c.Clients = append(c.Clients, Client{Name: "a", IPs: []string{"1.1.1.1"}, Profile: c.Default})
@@ -75,11 +83,11 @@ func TestStore(t *testing.T) {
 	if got := s2.Get(); len(got.Clients) != 1 || got.Clients[0].Name != "Bedroom" || got.Clients[0].Profile.Ads != AdsCut {
 		t.Errorf("after reload: %+v", got)
 	}
-	c.Clients[0].UserAgents = nil
-	if err := s.Set(c); err == nil || !strings.Contains(err.Error(), "matches nothing") {
+	c.Clients[0].Profile.Mode = "fast"
+	if err := s.Set(c); err == nil || !strings.Contains(err.Error(), "fast") {
 		t.Errorf("bad config saved: %v", err)
 	}
-	if got := s.Get(); len(got.Clients[0].UserAgents) != 1 {
+	if got := s.Get(); got.Clients[0].Profile.Mode != ModeProxy {
 		t.Error("a refused config replaced the good one")
 	}
 }

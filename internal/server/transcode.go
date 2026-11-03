@@ -18,24 +18,45 @@ import (
 // evenCeil rounds up to an even number: the DVR's encoder refuses odd heights.
 func evenCeil(n int) int { return n + n%2 }
 
-// ffmpegArgs converts input to an MPEG-TS on stdout as the settings say: the
-// picture fitted inside the largest size, both sides even.
+// videoFilter is the picture's way through ffmpeg: no faster than t.FPS, the
+// middle cut to the crop shape, then fitted inside the largest size (or
+// stretched to it), both sides even.
+func videoFilter(t config.Transcode) string {
+	f := []string{fmt.Sprintf(`fps=min(source_fps\,%d)`, t.FPS)}
+	if a, b, ok := t.CropShape(); ok {
+		f = append(f, fmt.Sprintf(`crop=min(iw\,ih*%[1]d/%[2]d):min(ih\,iw*%[2]d/%[1]d)`, a, b))
+	}
+	if t.ExactSize {
+		f = append(f, fmt.Sprintf("scale=%d:%d,setsar=1", evenCeil(t.MaxWidth), evenCeil(t.MaxHeight)))
+	} else {
+		f = append(f, fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2", t.MaxWidth, t.MaxHeight))
+	}
+	return strings.Join(append(f, "format=yuv420p"), ",")
+}
+
+// ffmpegArgs converts input to an MPEG-TS on stdout as the settings say.
 func ffmpegArgs(t config.Transcode, input string) []string {
-	fps := strconv.Itoa(t.FPS)
-	vf := fmt.Sprintf("fps=%s,scale=%d:%d:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p", fps, t.MaxWidth, t.MaxHeight)
 	kbps := func(n int) string { return strconv.Itoa(n) + "k" }
-	return []string{
+	x264 := []string{}
+	if t.SingleSlice {
+		// zerolatency turns on sliced threads, which splits each frame.
+		x264 = []string{"-x264-params", "sliced-threads=0:slices=1"}
+	}
+	args := []string{
 		"-hide_banner", "-loglevel", "error", "-nostdin",
 		"-i", input,
 		"-map", "0:v:0", "-map", "0:a:0?",
-		"-vf", vf,
+		"-vf", videoFilter(t),
 		"-c:v", "libx264", "-profile:v", t.H264Profile,
 		"-preset", "veryfast", "-tune", "zerolatency",
-		"-g", strconv.Itoa(t.FPS * 2), "-b:v", kbps(t.VideoKbps), "-maxrate", kbps(t.VideoKbps * 6 / 5), "-bufsize", kbps(t.VideoKbps * 2),
+	}
+	args = append(args, x264...)
+	return append(args,
+		"-g", strconv.Itoa(t.FPS*2), "-b:v", kbps(t.VideoKbps), "-maxrate", kbps(t.VideoKbps*6/5), "-bufsize", kbps(t.VideoKbps*2),
 		"-a53cc", "0", // no caption data for a small decoder to skip
 		"-c:a", "aac", "-ac", strconv.Itoa(t.AudioChannels), "-ar", "44100", "-b:a", kbps(t.AudioKbps),
 		"-f", "mpegts", "-muxdelay", "0", "pipe:1",
-	}
+	)
 }
 
 // transcode runs ffmpeg for one client and streams what it makes. The stream

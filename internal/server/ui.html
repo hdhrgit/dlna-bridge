@@ -79,6 +79,12 @@ function profileForm(p, rerender) {
       field('H.264 profile', sel(t, 'h264_profile', [['baseline', 'Baseline'], ['main', 'Main'], ['high', 'High']]))));
     box.append(el('label', { class: 'check' }, el('input', { type: 'checkbox', ...(t.pre_scale ? { checked: '' } : {}), on: { change: e => t.pre_scale = e.target.checked } }),
       'Have the DVR make a small stream first for live channels (cheaper than decoding the full picture here)'));
+    box.append(el('label', { class: 'check' }, el('input', { type: 'checkbox', ...(t.exact_size ? { checked: '' } : {}), on: { change: e => t.exact_size = e.target.checked } }),
+      'Stretch to exactly the largest width x height (no fitting inside)'));
+    box.append(el('label', { class: 'check' }, el('input', { type: 'checkbox', ...(t.single_slice ? { checked: '' } : {}), on: { change: e => t.single_slice = e.target.checked } }),
+      'One slice per frame (for decoders that take no more)'));
+    box.append(el('div', { class: 'grid' }, field('Keep the middle in this shape, such as 4:3 (empty keeps the whole picture)',
+      el('input', { value: t.crop || '', on: { input: e => t.crop = e.target.value.trim() } }))));
   }
   return box;
 }

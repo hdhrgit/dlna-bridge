@@ -475,3 +475,23 @@ func TestHeadOnStreams(t *testing.T) {
 		t.Errorf("recording: %d %v", rec.StatusCode, rec.Header)
 	}
 }
+
+// A board's settings give one slice per frame, a capped rate, and the middle
+// 4:3 of the picture stretched to exactly its size.
+func TestFFmpegArgs(t *testing.T) {
+	tc := config.DefaultTranscode()
+	args := strings.Join(ffmpegArgs(tc, "in"), " ")
+	if !strings.Contains(args, `-vf fps=min(source_fps\,24),scale=240:240:force_original_aspect_ratio=decrease,`) || strings.Contains(args, "x264-params") {
+		t.Errorf("default: %s", args)
+	}
+	tc.MaxHeight, tc.ExactSize, tc.Crop, tc.SingleSlice = 192, true, "4:3", true
+	args = strings.Join(ffmpegArgs(tc, "in"), " ")
+	for _, want := range []string{
+		`-vf fps=min(source_fps\,24),crop=min(iw\,ih*4/3):min(ih\,iw*3/4),scale=240:192,setsar=1,format=yuv420p `,
+		"-tune zerolatency -x264-params sliced-threads=0:slices=1 -g 48 ",
+	} {
+		if !strings.Contains(args, want) {
+			t.Errorf("board: no %q in %s", want, args)
+		}
+	}
+}

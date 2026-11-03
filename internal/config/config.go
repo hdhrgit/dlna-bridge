@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -33,11 +34,11 @@ type Profile struct {
 }
 
 // Transcode is what a client in transcode mode gets: the picture fitted inside
-// MaxWidth x MaxHeight, an MPEG-TS stream.
+// MaxWidth x MaxHeight (or stretched to exactly that), an MPEG-TS stream.
 type Transcode struct {
 	MaxWidth      int    `json:"max_width"`
 	MaxHeight     int    `json:"max_height"`
-	FPS           int    `json:"fps"`
+	FPS           int    `json:"fps"` // the most; a slower source keeps its rate
 	VideoKbps     int    `json:"video_kbps"`
 	AudioKbps     int    `json:"audio_kbps"`
 	AudioChannels int    `json:"audio_channels"`
@@ -45,10 +46,34 @@ type Transcode struct {
 	// PreScale has the DVR make a small stream first for live channels, which
 	// costs the DVR less than decoding the full picture here.
 	PreScale bool `json:"pre_scale"`
+	// ExactSize scales to exactly MaxWidth x MaxHeight, stretching a little if
+	// the shapes differ, instead of fitting inside.
+	ExactSize bool `json:"exact_size"`
+	// Crop, a shape such as "4:3", keeps the middle of the picture in that
+	// shape before scaling. Empty keeps the whole picture.
+	Crop string `json:"crop,omitempty"`
+	// SingleSlice makes each frame one slice, for decoders that take no more.
+	SingleSlice bool `json:"single_slice"`
+}
+
+// CropShape reads Crop as width and height parts, false when it is empty or
+// not a shape.
+func (t Transcode) CropShape() (int, int, bool) {
+	a, b, ok := strings.Cut(strings.TrimSpace(t.Crop), ":")
+	if !ok {
+		return 0, 0, false
+	}
+	w, err1 := strconv.Atoi(a)
+	h, err2 := strconv.Atoi(b)
+	if err1 != nil || err2 != nil || w < 1 || h < 1 || w > 100 || h > 100 {
+		return 0, 0, false
+	}
+	return w, h, true
 }
 
 // Client is a group of devices that share a profile. A request matches when
-// its address is in IPs or its User-Agent contains one of UserAgents.
+// its address is in IPs or its User-Agent contains one of UserAgents. A client
+// with neither is used only by name, with ?profile=<name>.
 type Client struct {
 	Name       string   `json:"name"`
 	IPs        []string `json:"ips"` // addresses or CIDR ranges
@@ -117,6 +142,9 @@ func (p Profile) validate() error {
 	case t.AudioChannels < 1 || t.AudioChannels > 6:
 		return errors.New("transcode audio channels must be 1 to 6")
 	}
+	if _, _, ok := t.CropShape(); strings.TrimSpace(t.Crop) != "" && !ok {
+		return fmt.Errorf("crop %q is not a shape such as 4:3", t.Crop)
+	}
 	switch t.H264Profile {
 	case "baseline", "main", "high":
 	default:
@@ -142,9 +170,6 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("two clients are named %q", name)
 		}
 		names[strings.ToLower(name)] = true
-		if len(cl.IPs) == 0 && len(cl.UserAgents) == 0 {
-			return fmt.Errorf("client %q matches nothing: give an address or a User-Agent", name)
-		}
 		for _, s := range cl.IPs {
 			if _, err := parseNet(s); err != nil {
 				return fmt.Errorf("client %q: %w", name, err)
