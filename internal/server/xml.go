@@ -1,9 +1,8 @@
 package server
 
-// The device description and the two service descriptions. Samsung TVs look for
-// the sec: capabilities before they offer bookmarks and the feature list.
+// The device description and the two service descriptions.
 const descriptionXML = `<?xml version="1.0" encoding="utf-8"?>
-<root xmlns="urn:schemas-upnp-org:device-1-0" xmlns:dlna="urn:schemas-dlna-org:device-1-0" xmlns:sec="http://www.sec.co.kr/dlna">
+<root xmlns="urn:schemas-upnp-org:device-1-0" xmlns:dlna="urn:schemas-dlna-org:device-1-0">
   <specVersion><major>1</major><minor>0</minor></specVersion>
   <device>
     <deviceType>urn:schemas-upnp-org:device:MediaServer:1</deviceType>
@@ -16,8 +15,12 @@ const descriptionXML = `<?xml version="1.0" encoding="utf-8"?>
     <serialNumber>{{.UUID}}</serialNumber>
     <UDN>uuid:{{.UUID}}</UDN>
     <dlna:X_DLNADOC>DMS-1.50</dlna:X_DLNADOC>
-    <sec:ProductCap>smi,DCM10,getMediaInfo.sec,getCaptionInfo.sec</sec:ProductCap>
-    <sec:X_ProductCap>smi,DCM10,getMediaInfo.sec,getCaptionInfo.sec</sec:X_ProductCap>
+    <iconList>
+      <icon><mimetype>image/png</mimetype><width>48</width><height>48</height><depth>24</depth><url>/icons/logo48.png</url></icon>
+      <icon><mimetype>image/jpeg</mimetype><width>48</width><height>48</height><depth>24</depth><url>/icons/logo48.jpg</url></icon>
+      <icon><mimetype>image/png</mimetype><width>120</width><height>120</height><depth>24</depth><url>/icons/logo120.png</url></icon>
+      <icon><mimetype>image/jpeg</mimetype><width>120</width><height>120</height><depth>24</depth><url>/icons/logo120.jpg</url></icon>
+    </iconList>
     <presentationURL>/</presentationURL>
     <serviceList>
       <service>

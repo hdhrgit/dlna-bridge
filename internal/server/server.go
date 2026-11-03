@@ -66,6 +66,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/config", s.apiSetConfig)
 	mux.HandleFunc("GET /channels.m3u", s.playlist)
 	mux.HandleFunc("GET /description.xml", s.description)
+	mux.HandleFunc("GET /icons/{name}", func(w http.ResponseWriter, r *http.Request) {
+		b, typ, ok := iconFile(r.PathValue("name"))
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", typ)
+		w.Write(b)
+	})
 	mux.HandleFunc("GET /scpd/ContentDirectory.xml", serveXML(contentDirectoryXML))
 	mux.HandleFunc("GET /scpd/ConnectionManager.xml", serveXML(connectionManagerXML))
 	mux.HandleFunc("POST /ctl/ContentDirectory", s.contentDirectory)
@@ -74,11 +83,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /stream/live/{number}", s.streamLive)
 	mux.HandleFunc("GET /stream/rec/{id}", s.streamRecording)
 	mux.HandleFunc("GET /stream/adfree/{id}", s.streamAdFree)
-	return logRequests(s.cfg.Logf, mux)
+	return logRequests(s.cfg.Logf, s.cfg.Version, mux)
 }
 
-func logRequests(logf func(string, ...any), h http.Handler) http.Handler {
+func logRequests(logf func(string, ...any), version string, h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Server", serverHeader(version))
 		if !strings.HasPrefix(r.URL.Path, "/ctl/") {
 			logf("http: %s %s %s from %s", r.Method, r.URL.Path, r.Header.Get("User-Agent"), r.RemoteAddr)
 		}
