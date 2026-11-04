@@ -482,12 +482,12 @@ func TestHeadOnStreams(t *testing.T) {
 // 4:3 of the picture stretched to exactly its size.
 func TestFFmpegArgs(t *testing.T) {
 	tc := config.DefaultTranscode()
-	args := strings.Join(ffmpegArgs(tc, "in"), " ")
+	args := strings.Join(ffmpegArgs(tc, "in", false), " ")
 	if !strings.Contains(args, `-vf fps=min(source_fps\,24),scale=240:240:force_original_aspect_ratio=decrease,`) || strings.Contains(args, "x264-params") {
 		t.Errorf("default: %s", args)
 	}
 	tc.MaxHeight, tc.ExactSize, tc.Crop, tc.SingleSlice = 192, true, "4:3", true
-	args = strings.Join(ffmpegArgs(tc, "in"), " ")
+	args = strings.Join(ffmpegArgs(tc, "in", false), " ")
 	for _, want := range []string{
 		`-vf fps=min(source_fps\,24),crop=min(iw\,ih*4/3):min(ih\,iw*3/4),scale=240:192,setsar=1,format=yuv420p `,
 		"-tune zerolatency -x264-params sliced-threads=0:slices=1 -g 48 ",
@@ -495,6 +495,9 @@ func TestFFmpegArgs(t *testing.T) {
 		if !strings.Contains(args, want) {
 			t.Errorf("board: no %q in %s", want, args)
 		}
+	}
+	if args := strings.Join(ffmpegArgs(tc, "in", true), " "); !strings.Contains(args, "-live_start_index -1 -i in ") {
+		t.Errorf("live HLS: %s", args)
 	}
 }
 
@@ -510,7 +513,7 @@ func TestTranscodeRetries(t *testing.T) {
 	settings, _ := config.Open("", config.Config{})
 	s := New(Config{FFmpeg: ff, Settings: settings})
 	w := httptest.NewRecorder()
-	s.transcode(w, httptest.NewRequest("GET", "/stream/live/1", nil), config.DefaultTranscode(), "Tiny", "1", "in")
+	s.transcode(w, httptest.NewRequest("GET", "/stream/live/1", nil), config.DefaultTranscode(), "Tiny", "1", "in", false)
 	if got := w.Body.String(); got != "picture\n" {
 		t.Errorf("got %q", got)
 	}

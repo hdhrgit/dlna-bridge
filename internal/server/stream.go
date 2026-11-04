@@ -40,7 +40,7 @@ func (s *Server) streamLive(w http.ResponseWriter, r *http.Request) {
 		// sending the full one for us to decode.
 		input = s.cfg.DVR.SmallStreamURL(dev, number, evenCeil(t.MaxHeight), t.VideoKbps*2+t.AudioKbps)
 	}
-	s.transcode(w, r, t, name, number+" "+ch.Name, input)
+	s.transcode(w, r, t, name, number+" "+ch.Name, input, true)
 }
 
 func (s *Server) streamRecording(w http.ResponseWriter, r *http.Request) {
@@ -50,7 +50,7 @@ func (s *Server) streamRecording(w http.ResponseWriter, r *http.Request) {
 		s.proxy(w, r, dvr.RecordingPath(id), recFeatures)
 		return
 	}
-	s.transcode(w, r, prof.Transcode, name, "recording "+id, s.cfg.DVR.Base.String()+dvr.RecordingPath(id))
+	s.transcode(w, r, prof.Transcode, name, "recording "+id, s.cfg.DVR.Base.String()+dvr.RecordingPath(id), false)
 }
 
 func (s *Server) proxy(w http.ResponseWriter, r *http.Request, dvrPath, features string) {

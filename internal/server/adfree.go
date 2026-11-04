@@ -66,7 +66,7 @@ func (s *Server) streamAdFree(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if r.URL.Query().Get("raw") == "" {
 		if name, prof := s.profileFor(r); prof.Mode == config.ModeTranscode {
-			s.transcode(w, r, prof.Transcode, name, "recording "+id, s.cfg.SelfURL+"/stream/adfree/"+url.PathEscape(id)+"?raw=1")
+			s.transcode(w, r, prof.Transcode, name, "recording "+id, s.cfg.SelfURL+"/stream/adfree/"+url.PathEscape(id)+"?raw=1", false)
 			return
 		}
 	}

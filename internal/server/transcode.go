@@ -2,7 +2,9 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	"dlna/internal/config"
+	"dlna/internal/cut"
 )
 
 // evenCeil rounds up to an even number: the DVR's encoder refuses odd heights.
@@ -35,34 +38,41 @@ func videoFilter(t config.Transcode) string {
 	return strings.Join(append(f, "format=yuv420p"), ",")
 }
 
-// ffmpegArgs converts input to an MPEG-TS on stdout as the settings say.
-func ffmpegArgs(t config.Transcode, input string) []string {
+// ffmpegArgs converts input to an MPEG-TS on stdout as the settings say. For
+// the DVR's live HLS it starts at the newest segment rather than three back.
+func ffmpegArgs(t config.Transcode, input string, liveHLS bool) []string {
 	kbps := func(n int) string { return strconv.Itoa(n) + "k" }
 	x264 := []string{}
 	if t.SingleSlice {
 		// zerolatency turns on sliced threads, which splits each frame.
 		x264 = []string{"-x264-params", "sliced-threads=0:slices=1"}
 	}
-	args := []string{
-		"-hide_banner", "-loglevel", "error", "-nostdin",
+	args := []string{"-hide_banner", "-loglevel", "error", "-nostdin"}
+	if liveHLS {
+		args = append(args, "-live_start_index", "-1")
+	}
+	args = append(args,
 		"-i", input,
 		"-map", "0:v:0", "-map", "0:a:0?",
 		"-vf", videoFilter(t),
 		"-c:v", "libx264", "-profile:v", t.H264Profile,
 		"-preset", "veryfast", "-tune", "zerolatency",
-	}
+	)
 	args = append(args, x264...)
 	return append(args,
 		"-g", strconv.Itoa(t.FPS*2), "-b:v", kbps(t.VideoKbps), "-maxrate", kbps(t.VideoKbps*6/5), "-bufsize", kbps(t.VideoKbps*2),
 		"-a53cc", "0", // no caption data for a small decoder to skip
 		"-c:a", "aac", "-ac", strconv.Itoa(t.AudioChannels), "-ar", "44100", "-b:a", kbps(t.AudioKbps),
-		"-f", "mpegts", "-muxdelay", "0", "pipe:1",
+		// Each packet goes out as it is made, not in 32 kB lumps.
+		"-flush_packets", "1", "-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0", "pipe:1",
 	)
 }
 
 // transcode runs ffmpeg for one client and streams what it makes. The stream
-// has no length and does not seek. It stops when the client goes.
-func (s *Server) transcode(w http.ResponseWriter, r *http.Request, t config.Transcode, client, what, input string) {
+// has no length and does not seek. It stops when the client goes. A live
+// channel is kept near its live edge: a client that reads slower than it
+// plays skips ahead rather than falling behind.
+func (s *Server) transcode(w http.ResponseWriter, r *http.Request, t config.Transcode, client, what, input string, live bool) {
 	w.Header().Set("Content-Type", tsMIME)
 	w.Header().Set("Cache-Control", "no-cache, no-store")
 	w.Header().Set("TransferMode.DLNA.ORG", "Streaming")
@@ -84,9 +94,12 @@ func (s *Server) transcode(w http.ResponseWriter, r *http.Request, t config.Tran
 
 	started := time.Now()
 	s.cfg.Logf("transcode: %s to %s (%s)", what, ip, client)
-	args := ffmpegArgs(t, input)
+	args := ffmpegArgs(t, input, live && strings.Contains(input, ".m3u8"))
+	if live {
+		setSendBuffer(r, liveSendBuffer)
+	}
 	for try := 1; ; try++ {
-		sent, msg, err := s.runFFmpeg(w, r, args)
+		sent, msg, err := s.runFFmpeg(w, r, args, live, what)
 		s.cfg.Logf("transcode: %s to %s ended after %s: %v %s", what, ip, time.Since(started).Round(time.Second), err, msg)
 		// The DVR's small stream sometimes fails to start, and ffmpeg is
 		// stopped after startLimit. The client has had nothing yet, so it is
@@ -106,9 +119,36 @@ const startLimit = 20 * time.Second
 // stops reading but keeps its connection would otherwise hold a conversion.
 const stallLimit = 20 * time.Second
 
+// liveBacklog is the most video of a live channel held for a slow client.
+// The DVR passes a channel on in bursts of up to 7 s of video, which a client
+// with a full buffer has to wait out; beyond that it is behind.
+const liveBacklog = 8 * 90000
+
+// liveSendBuffer is the socket buffer for a live conversion, so that what the
+// client has not taken waits in the queue, where it can be cut, rather than in
+// the kernel.
+const liveSendBuffer = 16 << 10
+
+// setSendBuffer sets the request connection's socket send buffer.
+func setSendBuffer(r *http.Request, n int) {
+	if c, ok := r.Context().Value(connKey{}).(*net.TCPConn); ok {
+		c.SetWriteBuffer(n)
+	}
+}
+
+type connKey struct{}
+
+// ConnContext keeps each connection in its requests' context, for
+// http.Server.ConnContext.
+func ConnContext(ctx context.Context, c net.Conn) context.Context {
+	return context.WithValue(ctx, connKey{}, c)
+}
+
 // runFFmpeg runs one ffmpeg and copies its output to w until either ends. It
-// returns the bytes sent and the end of ffmpeg's error output.
-func (s *Server) runFFmpeg(w http.ResponseWriter, r *http.Request, args []string) (int64, string, error) {
+// returns the bytes sent and the end of ffmpeg's error output. For a live
+// channel the output goes through a queue that is cut when it holds more than
+// liveBacklog, so ffmpeg, and the DVR behind it, never wait for the client.
+func (s *Server) runFFmpeg(w http.ResponseWriter, r *http.Request, args []string, live bool, what string) (int64, string, error) {
 	cmd := exec.CommandContext(r.Context(), s.cfg.FFmpeg, args...)
 	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 	cmd.WaitDelay = 3 * time.Second
@@ -128,11 +168,27 @@ func (s *Server) runFFmpeg(w http.ResponseWriter, r *http.Request, args []string
 		}
 	})
 	defer timer.Stop()
+	var src io.Reader = out
+	copied := make(chan struct{})
+	if live {
+		q := cut.NewLive(liveBacklog)
+		q.OnCut = func(ticks int64) {
+			s.cfg.Logf("transcode: %s: the client is behind; left out %.1fs", what, float64(ticks)/90000)
+		}
+		go func() {
+			_, err := io.Copy(q, out)
+			q.CloseWithError(err)
+			close(copied)
+		}()
+		src = q
+	} else {
+		close(copied)
+	}
 	rc := http.NewResponseController(w)
 	buf := make([]byte, 64<<10)
 	var sent int64
 	for {
-		n, rerr := out.Read(buf)
+		n, rerr := src.Read(buf)
 		if n > 0 {
 			started.Store(true)
 			rc.SetWriteDeadline(time.Now().Add(stallLimit))
@@ -152,6 +208,7 @@ func (s *Server) runFFmpeg(w http.ResponseWriter, r *http.Request, args []string
 	// first stops an ffmpeg blocked on writing to it.
 	out.Close()
 	cmd.Process.Signal(os.Interrupt)
+	<-copied
 	err = cmd.Wait()
 	msg := strings.TrimSpace(stderr.String())
 	if len(msg) > 500 {

@@ -67,7 +67,7 @@ Each client and the default have a **profile**:
 |---|---|
 | Streams | **Direct**: the client plays the DVR's own stream. **Through the bridge**: the same stream passed through, with the DLNA headers some TVs want (try it if a TV lists channels but will not play). **Converted**: ffmpeg converts it, below. |
 | Commercials | **Cut out**, or **Play** (pass through). |
-| Converted | The largest width and height (the picture is fitted inside, both sides even), frames per second, video and audio kbps, audio channels, H.264 profile (baseline has no B-frames and no CABAC, for small decoders). Live channels can come from a small stream the DVR makes first, which costs it less than decoding the full picture here. The result is an MPEG-TS with no length, so it does not seek. |
+| Converted | The largest width and height (the picture is fitted inside, both sides even), frames per second, video and audio kbps, audio channels, H.264 profile (baseline has no B-frames and no CABAC, for small decoders). Live channels can come from a small stream the DVR makes first, which costs it less than decoding the full picture here, but the DVR's small stream runs about 10 s behind its full one; leave it off where delay matters. A live channel is kept near its live edge: a client that falls more than 8 s behind skips ahead to the newest keyframe. The result is an MPEG-TS with no length, so it does not seek. |
 
 At most *Conversions at once* run, across all clients; the rest get a 503. Each viewer has an ffmpeg of their
 own, which stops when they leave.
