@@ -1,7 +1,8 @@
 services:
   dlna:
+    # The published image. `docker compose up -d --build` builds it from this source instead.
+    image: ghcr.io/hdhrgit/dlna-bridge:0.99
     build: .
-    image: dlna:dev
     restart: unless-stopped
     init: true # reaps the ffmpegs
     # Discovery is UDP multicast on the LAN, which a bridged container never sees.

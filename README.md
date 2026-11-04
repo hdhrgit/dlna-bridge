@@ -14,9 +14,19 @@ on the settings page: see [Clients](#clients).
 
 ## Run
 
+A multi-platform image (linux/amd64, linux/arm64 and linux/arm/v7) is published for each release, with ffmpeg in it:
+
 ```sh
-docker compose up -d --build
+docker run -d --name dlna-bridge --restart unless-stopped --init --network host \
+  -v dlna-state:/var/lib/dlna \
+  -e DLNA_DVR=http://localhost:8089 \
+  ghcr.io/hdhrgit/dlna-bridge:0.99
 ```
+
+or save `docker-compose.yml` from this repo, set `DLNA_DVR` in it, and run `docker compose up -d`. To build from
+the source instead: `docker compose up -d --build`. Set `DLNA_DVR` to the address of the Channels DVR as this
+machine reaches it (`localhost` when it runs here). Host networking needs Docker on Linux; Docker Desktop for
+Mac and Windows does not pass multicast through.
 
 The container uses host networking: discovery is UDP multicast on the LAN, which a bridged container never sees.
 With the DVR on the same machine, `DLNA_DVR=http://localhost:8089` works and the TVs are sent to this machine's
