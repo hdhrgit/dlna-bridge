@@ -32,7 +32,7 @@ func TestMatch(t *testing.T) {
 }
 
 func TestValidate(t *testing.T) {
-	good := Config{Default: Profile{Mode: ModeDirect, Ads: AdsCut}, MaxTranscodes: 2,
+	good := Config{Default: Profile{Mode: ModeDirect, Ads: AdsCut}, MaxTranscodes: 2, RecentHours: 24,
 		Clients: []Client{{Name: "A", IPs: []string{"10.0.0.1"}, Profile: Profile{Mode: ModeTranscode, Ads: AdsKeep, Transcode: DefaultTranscode()}}}}
 	if err := good.Validate(); err != nil {
 		t.Fatal(err)
@@ -53,6 +53,7 @@ func TestValidate(t *testing.T) {
 		"fps":           func(c *Config) { c.Clients[0].Profile.Transcode.FPS = 0 },
 		"h264":          func(c *Config) { c.Clients[0].Profile.Transcode.H264Profile = "extended" },
 		"max transcode": func(c *Config) { c.MaxTranscodes = 0 },
+		"recent hours":  func(c *Config) { c.RecentHours = 0 },
 	} {
 		c := clone(good)
 		edit(&c)
@@ -68,7 +69,7 @@ func TestStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := s.Get(); got.Default.Mode != ModeDirect || got.MaxTranscodes != 2 {
+	if got := s.Get(); got.Default.Mode != ModeDirect || got.MaxTranscodes != 2 || got.RecentHours != 24 {
 		t.Errorf("defaults: %+v", got)
 	}
 	c := s.Get()

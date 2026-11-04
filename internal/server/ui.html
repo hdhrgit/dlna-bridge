@@ -66,8 +66,11 @@
   <div id="clients"></div>
   <button id="add">Add a client</button>
 
-  <h2>Limits</h2>
-  <div class="card"><label for="max">Conversions at once, across all clients</label><input id="max" type="number" min="1" max="64" style="max-width:120px"></div>
+  <h2>Other settings</h2>
+  <div class="card grid">
+    <div><label for="max">Conversions at once, across all clients</label><input id="max" type="number" min="1" max="64"></div>
+    <div><label for="recent">Recent recordings reach back (hours)</label><input id="recent" type="number" min="1" max="8760"></div>
+  </div>
 </main>
 <div class="bar"><div class="inner"><button class="primary" id="save">Save</button><span id="msg"></span></div></div>
 
@@ -106,7 +109,7 @@ function profileForm(p, rerender) {
 }
 
 function render() {
-  $('max').value = cfg.max_transcodes;
+  $('max').value = cfg.max_transcodes; $('recent').value = cfg.recent_hours;
   const d = $('default'); d.replaceChildren(el('div', { class: 'card' }, profileForm(cfg.default, render)));
   const c = $('clients'); c.replaceChildren();
   cfg.clients.forEach((cl, i) => c.append(el('div', { class: 'card' },
@@ -183,6 +186,7 @@ async function load(keepEdits) {
 
 $('add').onclick = () => { cfg.clients.push({ name: 'New client', ips: [], user_agents: [], profile: { mode: 'transcode', ads: 'cut', transcode: JSON.parse(JSON.stringify(defaults)) } }); render(); $('clients').lastChild.scrollIntoView({ behavior: 'smooth' }); };
 $('max').oninput = e => cfg.max_transcodes = +e.target.value;
+$('recent').oninput = e => cfg.recent_hours = +e.target.value;
 $('save').onclick = async () => {
   const m = $('msg'); m.className = ''; m.textContent = 'Saving…';
   const r = await fetch('api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg) });

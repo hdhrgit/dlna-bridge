@@ -48,6 +48,7 @@ type Config struct {
 
 type Server struct {
 	started time.Time
+	now     func() time.Time // time.Now, but a test can set it
 	ffmpeg  ffmpegCheck
 	cfg     Config
 	plans   plans
@@ -65,7 +66,7 @@ func New(cfg Config) *Server {
 	if cfg.SelfURL == "" {
 		cfg.SelfURL = "http://127.0.0.1:8200"
 	}
-	return &Server{cfg: cfg, started: time.Now()}
+	return &Server{cfg: cfg, started: time.Now(), now: time.Now}
 }
 
 func (s *Server) Handler() http.Handler {

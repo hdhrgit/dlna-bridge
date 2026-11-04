@@ -78,7 +78,10 @@ func newServerWith(t *testing.T, start config.Config) *httptest.Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := httptest.NewServer(New(Config{Name: "Test DVR", UUID: "u-1", Version: "t", DVR: c, Settings: settings, Bookmarks: b}).Handler())
+	srv := New(Config{Name: "Test DVR", UUID: "u-1", Version: "t", DVR: c, Settings: settings, Bookmarks: b})
+	// Two hours after the newest recordings in the fake DVR started.
+	srv.now = func() time.Time { return time.Unix(1793600000+7200, 0) }
+	s := httptest.NewServer(srv.Handler())
 	t.Cleanup(s.Close)
 	return s
 }
@@ -143,23 +146,16 @@ func browse(t *testing.T, base, id, flag string, start, count int) (browseResult
 func TestBrowseRoot(t *testing.T) {
 	s := newTestServer(t, false)
 	br, d := browse(t, s.URL, "0", "BrowseDirectChildren", 0, 0)
-	if br.TotalMatches != 5 || len(d.Containers) != 5 {
+	if br.TotalMatches != 6 || len(d.Containers) != 6 {
 		t.Fatalf("root: %+v", d)
 	}
-	if d.Containers[0].Title != "Live TV" || d.Containers[0].ChildCount != 3 {
-		t.Errorf("live folder: %+v", d.Containers[0])
-	}
-	if d.Containers[1].Title != "Favorites" || d.Containers[1].ChildCount != 1 {
-		t.Errorf("favorites folder: %+v", d.Containers[1])
-	}
-	if d.Containers[2].Title != "Channels by source" || d.Containers[2].ChildCount != 2 {
-		t.Errorf("sources folder: %+v", d.Containers[2])
-	}
-	if d.Containers[3].Title != "Recordings" || d.Containers[3].ChildCount != 3 {
-		t.Errorf("recordings folder: %+v", d.Containers[3])
-	}
-	if d.Containers[4].Title != "Recording now" || d.Containers[4].ChildCount != 1 {
-		t.Errorf("recording now folder: %+v", d.Containers[4])
+	for i, want := range []struct {
+		title string
+		kids  int
+	}{{"Live TV", 3}, {"Favorites", 1}, {"Recent recordings", 3}, {"Recordings", 3}, {"Recording now", 1}, {"Channels by source", 2}} {
+		if got := d.Containers[i]; got.Title != want.title || got.ChildCount != want.kids {
+			t.Errorf("folder %d: %+v, want %s with %d", i, got, want.title, want.kids)
+		}
 	}
 	_, meta := browse(t, s.URL, "0", "BrowseMetadata", 0, 0)
 	if len(meta.Containers) != 1 || meta.Containers[0].Title != "Test DVR" {
@@ -600,5 +596,34 @@ func TestStatusAndLog(t *testing.T) {
 	get(itoa(lg.Last))
 	if len(lg.Lines) != 0 {
 		t.Errorf("lines after the last: %+v", lg.Lines)
+	}
+}
+
+// Recent recordings are those that started within the configured hours,
+// newest first, each titled with its show.
+func TestRecentRecordings(t *testing.T) {
+	s := newTestServer(t, false)
+	_, d := browse(t, s.URL, "recent", "BrowseDirectChildren", 0, 0)
+	if len(d.Items) != 3 || d.Items[0].ID != "recent/18" && d.Items[0].ID != "recent/19" && d.Items[0].ID != "recent/21" {
+		t.Fatalf("last 24 hours: %+v", d.Items)
+	}
+	for _, it := range d.Items {
+		if it.ID == "recent/21" && it.Title != "Live Show 1970-01-01" && !strings.HasPrefix(it.Title, "Live Show") {
+			t.Errorf("title %q", it.Title)
+		}
+		if it.ID == "recent/17" {
+			t.Error("a recording from 30 hours ago is listed")
+		}
+	}
+	_, m := browse(t, s.URL, "recent/18", "BrowseMetadata", 0, 0)
+	if len(m.Items) != 1 || !strings.Contains(m.Items[0].Res.URL, "/stream/adfree/18") {
+		t.Errorf("metadata keeps the profile's treatment of ads: %+v", m.Items)
+	}
+
+	// A longer reach takes in the older one, put after the newer.
+	wide := newServerWith(t, config.Config{Default: config.Profile{Mode: config.ModeDirect, Ads: config.AdsCut}, RecentHours: 48})
+	_, d = browse(t, wide.URL, "recent", "BrowseDirectChildren", 0, 0)
+	if len(d.Items) != 4 || d.Items[3].ID != "recent/17" || d.Items[3].Title != "Nova - S03E04 Black Holes" && !strings.HasSuffix(d.Items[3].Title, "S03E04 Black Holes") {
+		t.Errorf("last 48 hours: %+v", d.Items)
 	}
 }

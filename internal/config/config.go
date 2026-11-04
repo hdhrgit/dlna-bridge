@@ -86,6 +86,8 @@ type Config struct {
 	Clients []Client `json:"clients"`
 	// MaxTranscodes limits conversions running at once, across all clients.
 	MaxTranscodes int `json:"max_transcodes"`
+	// RecentHours is how far back the Recent recordings folder reaches.
+	RecentHours int `json:"recent_hours"`
 }
 
 // DefaultTranscode is a start for a small screen.
@@ -112,6 +114,9 @@ func (c *Config) Fill() {
 	}
 	if c.MaxTranscodes == 0 {
 		c.MaxTranscodes = 2
+	}
+	if c.RecentHours == 0 {
+		c.RecentHours = 24
 	}
 }
 
@@ -159,6 +164,9 @@ func (c *Config) Validate() error {
 	}
 	if c.MaxTranscodes < 1 || c.MaxTranscodes > 64 {
 		return errors.New("max transcodes must be 1 to 64")
+	}
+	if c.RecentHours < 1 || c.RecentHours > 24*365 {
+		return errors.New("recent hours must be 1 to 8760")
 	}
 	names := map[string]bool{}
 	for i, cl := range c.Clients {
@@ -323,6 +331,12 @@ func (s *Store) Match(ip net.IP, ua, forced string) (string, Profile) {
 
 // Persistent says whether Set keeps the config in a file.
 func (s *Store) Persistent() bool { return s.path != "" }
+
+func (s *Store) RecentHours() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.cfg.RecentHours
+}
 
 func (s *Store) MaxTranscodes() int {
 	s.mu.RLock()

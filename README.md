@@ -44,6 +44,8 @@ not list it twice.
   `<number> <name> - <show on now>` from the DVR's `/devices/ANY/guide/now`, with its logo. Live streams cannot seek.
 * **Favorites**: the channels starred in the Channels apps. Left out when there are none.
 * **Channels by source**: a folder for each source (tuner, M3U list...), its channels played from that source.
+* **Recent recordings**: what started in the last 24 hours (the page sets how many), newest first, each titled
+  with its show, since a TV has no other way to see what is new. Left out when there are none.
 * **Recordings**: a folder per show (the DVR's groups), newest first, episodes titled `S01E02 Title`. They
   take byte ranges, so the TVs can seek. Samsung TVs save where they stopped (`X_SetBookmark`) and offer to
   resume; before that, they resume where the Channels apps left off.

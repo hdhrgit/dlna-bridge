@@ -87,13 +87,14 @@ const (
 	idSources    = "sources"
 	idRecordings = "rec"
 	idRecNow     = "recnow"
+	idRecent     = "recent"
 )
 
 func (s *Server) children(ctx context.Context, v view, id string) ([]object, error) {
 	switch {
 	case id == idRoot:
 		var out []object
-		for _, f := range []string{idLive, idFavorites, idSources, idRecordings, idRecNow} {
+		for _, f := range []string{idLive, idFavorites, idRecent, idRecordings, idRecNow, idSources} {
 			o, err := s.lookup(ctx, v, f)
 			if err == errNoSuchObject {
 				continue // no favorites, or nothing recording
@@ -115,6 +116,8 @@ func (s *Server) children(ctx context.Context, v view, id string) ([]object, err
 		return folders, err
 	case id == idRecNow:
 		return s.recordingNow(ctx, v)
+	case id == idRecent:
+		return s.recentRecordings(ctx, v)
 	case strings.HasPrefix(id, "recgroup/"):
 		_, items, err := s.recordingTree(ctx, v)
 		if err != nil {
@@ -131,7 +134,7 @@ func (s *Server) children(ctx context.Context, v view, id string) ([]object, err
 		}
 		return out, nil
 	case strings.HasPrefix(id, "live/"), strings.HasPrefix(id, "fav/"), strings.HasPrefix(id, "srcch/"),
-		strings.HasPrefix(id, "rec/"), strings.HasPrefix(id, "recnow/"):
+		strings.HasPrefix(id, "rec/"), strings.HasPrefix(id, "recnow/"), strings.HasPrefix(id, "recent/"):
 		return nil, nil // items have no children
 	}
 	return nil, errNoSuchObject
@@ -173,6 +176,12 @@ func (s *Server) lookup(ctx context.Context, v view, id string) (object, error) 
 			folders, _, err := s.recordingTree(ctx, v)
 			return folders, err
 		})
+	case id == idRecent:
+		o, err := folder("Recent recordings", func() ([]object, error) { return s.recentRecordings(ctx, v) })
+		if err == nil && o.Children == 0 {
+			err = errNoSuchObject
+		}
+		return o, err
 	case id == idRecNow:
 		o, err := folder("Recording now", func() ([]object, error) { return s.recordingNow(ctx, v) })
 		if err == nil && o.Children == 0 {
@@ -213,6 +222,12 @@ func (s *Server) lookup(ctx context.Context, v view, id string) (object, error) 
 		return find(items, id)
 	case strings.HasPrefix(id, "recnow/"):
 		items, err := s.recordingNow(ctx, v)
+		if err != nil {
+			return object{}, err
+		}
+		return find(items, id)
+	case strings.HasPrefix(id, "recent/"):
+		items, err := s.recentRecordings(ctx, v)
 		if err != nil {
 			return object{}, err
 		}
@@ -419,6 +434,29 @@ func (s *Server) recordingNow(ctx context.Context, v view) ([]object, error) {
 		o.Title = f.Airing.Title + " " + f.Created().Local().Format("15:04")
 		if f.Airing.EpisodeTitle != "" {
 			o.Title += " " + f.Airing.EpisodeTitle
+		}
+		out = append(out, o)
+	}
+	return out, nil
+}
+
+// recentRecordings lists the recordings that started within the last
+// RecentHours hours, newest first, whatever the show: a TV has no other way to
+// see what is new. Each is titled with its show, since they are not in one.
+func (s *Server) recentRecordings(ctx context.Context, v view) ([]object, error) {
+	files, err := s.cfg.DVR.Recordings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	since := s.now().Add(-time.Duration(s.cfg.Settings.RecentHours()) * time.Hour)
+	var out []object
+	for _, f := range files { // newest first
+		if f.Created().Before(since) {
+			break
+		}
+		o := s.recordingObject(v, f, "recent/"+string(f.ID), idRecent)
+		if t := f.Airing.Title; t != "" && !strings.HasPrefix(o.Title, t) {
+			o.Title = t + " - " + o.Title
 		}
 		out = append(out, o)
 	}
