@@ -126,6 +126,35 @@ type Client struct {
 	now      cached[[]nowEntry]
 	files    cached[[]Recording]
 	groups   cached[[]Group]
+	activity cached[activityResult]
+}
+
+type activityResult struct {
+	Items []string
+	Took  time.Duration
+}
+
+// Activity lists what the DVR says it is doing: the streams being watched
+// (direct ones too), the recordings under way, and the jobs it runs. Took is how
+// long the DVR took to answer.
+func (c *Client) Activity(ctx context.Context) ([]string, time.Duration, error) {
+	r, err := c.activity.get(3*time.Second, func() (activityResult, error) {
+		var d struct {
+			Activity map[string]string `json:"activity"`
+		}
+		start := time.Now()
+		if err := c.getJSON(ctx, "/dvr", &d); err != nil {
+			return activityResult{}, err
+		}
+		took := time.Since(start)
+		items := make([]string, 0, len(d.Activity))
+		for _, v := range d.Activity {
+			items = append(items, v)
+		}
+		sort.Strings(items)
+		return activityResult{items, took}, nil
+	})
+	return r.Items, r.Took, err
 }
 
 func New(base string) (*Client, error) {

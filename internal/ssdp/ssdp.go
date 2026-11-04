@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -36,6 +37,24 @@ type Advertiser struct {
 	Host  string
 	Iface *net.Interface // nil: the system's default multicast interface
 	Logf  func(format string, a ...any)
+
+	mu    sync.Mutex
+	stats Stats
+}
+
+// Stats says how discovery has gone since the start.
+type Stats struct {
+	Searches   int       `json:"searches"` // searches for a media server that we answered
+	LastSearch time.Time `json:"last_search"`
+	LastFrom   string    `json:"last_from"`
+	Notices    int       `json:"notices"` // alive notices sent
+	LastNotice time.Time `json:"last_notice"`
+}
+
+func (a *Advertiser) Stats() Stats {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.stats
 }
 
 // Run answers searches and sends alive notices until ctx ends, then says
@@ -81,6 +100,10 @@ func (a *Advertiser) Run(ctx context.Context) error {
 		if len(answers) == 0 {
 			continue
 		}
+		a.mu.Lock()
+		a.stats.Searches++
+		a.stats.LastSearch, a.stats.LastFrom = time.Now(), from.IP.String()
+		a.mu.Unlock()
 		go a.reply(conn, from, answers, mx)
 	}
 }
@@ -146,6 +169,12 @@ func (a *Advertiser) reply(conn *net.UDPConn, to *net.UDPAddr, ts []target, mx i
 }
 
 func (a *Advertiser) notifyAll(conn *net.UDPConn, nts string) {
+	if nts == "ssdp:alive" {
+		a.mu.Lock()
+		a.stats.Notices++
+		a.stats.LastNotice = time.Now()
+		a.mu.Unlock()
+	}
 	loc := a.location(group)
 	for _, t := range a.targets() {
 		msg := "NOTIFY * HTTP/1.1\r\n" +

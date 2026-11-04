@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"dlna/internal/config"
@@ -80,34 +81,78 @@ func (c *clientLog) list() []seenClient {
 	return out
 }
 
-// job is a conversion that is running.
+// job is a stream that is running through the bridge: a conversion, or a
+// stream passed through.
 type job struct {
-	ID     int       `json:"id"`
-	Client string    `json:"client"`
-	IP     string    `json:"ip"`
-	What   string    `json:"what"`
-	Since  time.Time `json:"since"`
+	ID        int
+	Kind      string // live, recording, or converted
+	Client    string
+	IP        string
+	UserAgent string
+	What      string
+	Since     time.Time
+	bytes     *atomic.Int64
+}
+
+// jobView is what the page shows: one row for each client and thing watched,
+// since a TV opens a dozen connections to one recording.
+type jobView struct {
+	Kind      string    `json:"kind"`
+	Client    string    `json:"client"`
+	IP        string    `json:"ip"`
+	UserAgent string    `json:"user_agent"`
+	What      string    `json:"what"`
+	Since     time.Time `json:"since"`
+	Bytes     int64     `json:"bytes"`
+	Conns     int       `json:"conns"`
 }
 
 type jobs struct {
 	mu   sync.Mutex
 	next int
-	m    map[int]job
+	m    map[int]*job
 }
 
-// start adds a job unless limit are already running.
-func (j *jobs) start(limit int, client, ip, what string) (int, bool) {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	if len(j.m) >= limit {
-		return 0, false
-	}
+func (j *jobs) add(kind, client, ip, ua, what string) int {
 	if j.m == nil {
-		j.m = map[int]job{}
+		j.m = map[int]*job{}
 	}
 	j.next++
-	j.m[j.next] = job{ID: j.next, Client: client, IP: ip, What: what, Since: time.Now()}
-	return j.next, true
+	j.m[j.next] = &job{ID: j.next, Kind: kind, Client: client, IP: ip, UserAgent: ua, What: what, Since: time.Now(), bytes: new(atomic.Int64)}
+	return j.next
+}
+
+// start adds a conversion unless limit are already running.
+func (j *jobs) start(limit int, client, ip, ua, what string) (int, bool) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	n := 0
+	for _, e := range j.m {
+		if e.Kind == "converted" {
+			n++
+		}
+	}
+	if n >= limit {
+		return 0, false
+	}
+	return j.add("converted", client, ip, ua, what), true
+}
+
+// track adds a stream passed through, which has no limit.
+func (j *jobs) track(kind, client, ip, ua, what string) int {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.add(kind, client, ip, ua, what)
+}
+
+// counter is where to add the bytes sent for a job.
+func (j *jobs) counter(id int) *atomic.Int64 {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if e := j.m[id]; e != nil {
+		return e.bytes
+	}
+	return new(atomic.Int64)
 }
 
 func (j *jobs) end(id int) {
@@ -116,13 +161,81 @@ func (j *jobs) end(id int) {
 	j.mu.Unlock()
 }
 
-func (j *jobs) list() []job {
+func (j *jobs) list() []jobView {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	out := make([]job, 0, len(j.m))
-	for _, e := range j.m {
-		out = append(out, e)
+	type key struct{ kind, ip, what string }
+	at := map[key]int{}
+	out := []jobView{}
+	ids := make([]int, 0, len(j.m))
+	for id := range j.m {
+		ids = append(ids, id)
 	}
-	sort.Slice(out, func(i, k int) bool { return out[i].ID < out[k].ID })
+	sort.Ints(ids)
+	for _, id := range ids {
+		e := j.m[id]
+		k := key{e.Kind, e.IP, e.What}
+		if i, ok := at[k]; ok {
+			out[i].Bytes += e.bytes.Load()
+			out[i].Conns++
+			if e.Since.Before(out[i].Since) {
+				out[i].Since = e.Since
+			}
+			continue
+		}
+		at[k] = len(out)
+		out = append(out, jobView{Kind: e.Kind, Client: e.Client, IP: e.IP, UserAgent: e.UserAgent, What: e.What, Since: e.Since, Bytes: e.bytes.Load(), Conns: 1})
+	}
 	return out
+}
+
+// countWriter counts the bytes written to a response.
+type countWriter struct {
+	http.ResponseWriter
+	n *atomic.Int64
+}
+
+func (c *countWriter) Write(b []byte) (int, error) {
+	n, err := c.ResponseWriter.Write(b)
+	c.n.Add(int64(n))
+	return n, err
+}
+
+func (c *countWriter) Unwrap() http.ResponseWriter { return c.ResponseWriter }
+
+func (c *countWriter) FlushError() error { return http.NewResponseController(c.ResponseWriter).Flush() }
+
+// tracked lists a stream passed through while it runs, with the bytes sent.
+// Requests for headers, and the bridge's own reads, are not listed.
+func (s *Server) tracked(w http.ResponseWriter, r *http.Request, kind, client, what string) (http.ResponseWriter, func()) {
+	ip := remoteIP(r)
+	if r.Method == http.MethodHead || ip == "127.0.0.1" || ip == "::1" {
+		return w, func() {}
+	}
+	id := s.jobs.track(kind, client, ip, r.Header.Get("User-Agent"), what)
+	return &countWriter{w, s.jobs.counter(id)}, func() { s.jobs.end(id) }
+}
+
+func remoteIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+// whatLive names a channel for the page.
+func (s *Server) whatLive(r *http.Request, number string) string {
+	if ch, ok, _ := s.cfg.DVR.Channel(r.Context(), number); ok {
+		return ch.Number + " " + ch.Name
+	}
+	return number
+}
+
+// whatRecording names a recording for the page.
+func (s *Server) whatRecording(r *http.Request, id string) string {
+	if f, ok, _ := s.cfg.DVR.Recording(r.Context(), id); ok {
+		return f.Airing.Title + " " + recordingTitle(f)
+	}
+	return "recording " + id
 }

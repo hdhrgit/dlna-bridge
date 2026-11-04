@@ -85,12 +85,13 @@ func (s *Server) transcode(w http.ResponseWriter, r *http.Request, t config.Tran
 		ip = r.RemoteAddr
 	}
 	limit := s.cfg.Settings.MaxTranscodes()
-	id, ok := s.jobs.start(limit, client, ip, what)
+	id, ok := s.jobs.start(limit, client, ip, r.Header.Get("User-Agent"), what)
 	if !ok {
 		http.Error(w, fmt.Sprintf("already converting %d streams", limit), http.StatusServiceUnavailable)
 		return
 	}
 	defer s.jobs.end(id)
+	w = &countWriter{w, s.jobs.counter(id)}
 
 	started := time.Now()
 	s.cfg.Logf("transcode: %s to %s (%s)", what, ip, client)

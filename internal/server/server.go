@@ -13,6 +13,7 @@ import (
 
 	"dlna/internal/config"
 	"dlna/internal/dvr"
+	"dlna/internal/ssdp"
 )
 
 const (
@@ -37,9 +38,17 @@ type Config struct {
 	// Debug logs each SOAP request and the start of its response.
 	Debug bool
 	Logf  func(format string, a ...any)
+	// Logs is what the page shows of the log; Logf should write to it.
+	Logs *LogBuffer
+	// Discovery reports how discovery has gone.
+	Discovery func() ssdp.Stats
+	// ConfigPath is where the settings are kept, for the page to say.
+	ConfigPath string
 }
 
 type Server struct {
+	started time.Time
+	ffmpeg  ffmpegCheck
 	cfg     Config
 	plans   plans
 	clients clientLog
@@ -56,13 +65,14 @@ func New(cfg Config) *Server {
 	if cfg.SelfURL == "" {
 		cfg.SelfURL = "http://127.0.0.1:8200"
 	}
-	return &Server{cfg: cfg}
+	return &Server{cfg: cfg, started: time.Now()}
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.ui)
 	mux.HandleFunc("GET /api/state", s.apiState)
+	mux.HandleFunc("GET /api/log", s.apiLog)
 	mux.HandleFunc("PUT /api/config", s.apiSetConfig)
 	mux.HandleFunc("GET /channels.m3u", s.playlist)
 	mux.HandleFunc("GET /description.xml", s.description)
@@ -89,7 +99,8 @@ func (s *Server) Handler() http.Handler {
 func logRequests(logf func(string, ...any), version string, h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Server", serverHeader(version))
-		if !strings.HasPrefix(r.URL.Path, "/ctl/") {
+		// The settings page polls every few seconds and would drown the rest.
+		if p := r.URL.Path; !strings.HasPrefix(p, "/ctl/") && !strings.HasPrefix(p, "/api/") && !strings.HasPrefix(p, "/icons/") && p != "/" {
 			logf("http: %s %s %s from %s", r.Method, r.URL.Path, r.Header.Get("User-Agent"), r.RemoteAddr)
 		}
 		h.ServeHTTP(w, r)

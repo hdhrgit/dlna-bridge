@@ -70,7 +70,10 @@ func (s *Server) streamAdFree(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.adFreeRecording(w, r, id)
+	name, _ := s.profileFor(r)
+	tw, done := s.tracked(w, r, "recording", name, s.whatRecording(r, id)+" (ads cut)")
+	defer done()
+	s.adFreeRecording(tw, r, id)
 }
 
 // adFreeRecording serves a recording without its breaks. If the cut list

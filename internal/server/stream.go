@@ -21,7 +21,9 @@ func (s *Server) streamLive(w http.ResponseWriter, r *http.Request) {
 	number, dev := r.PathValue("number"), r.URL.Query().Get("dev")
 	name, prof := s.profileFor(r)
 	if prof.Mode != config.ModeTranscode {
-		s.proxy(w, r, dvr.LivePath(dev, number), liveFeatures)
+		tw, done := s.tracked(w, r, "live", name, s.whatLive(r, number))
+		defer done()
+		s.proxy(tw, r, dvr.LivePath(dev, number), liveFeatures)
 		return
 	}
 	ch, found, err := s.cfg.DVR.Channel(r.Context(), number)
@@ -47,7 +49,9 @@ func (s *Server) streamRecording(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	name, prof := s.profileFor(r)
 	if prof.Mode != config.ModeTranscode {
-		s.proxy(w, r, dvr.RecordingPath(id), recFeatures)
+		tw, done := s.tracked(w, r, "recording", name, s.whatRecording(r, id))
+		defer done()
+		s.proxy(tw, r, dvr.RecordingPath(id), recFeatures)
 		return
 	}
 	s.transcode(w, r, prof.Transcode, name, "recording "+id, s.cfg.DVR.Base.String()+dvr.RecordingPath(id), false)

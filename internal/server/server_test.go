@@ -521,3 +521,84 @@ func TestTranscodeRetries(t *testing.T) {
 		t.Error("the job was left running")
 	}
 }
+
+func TestJobsGroupAndCount(t *testing.T) {
+	var j jobs
+	a := j.track("recording", "LG", "10.0.0.5", "webos", "Show S01E01")
+	b := j.track("recording", "LG", "10.0.0.5", "webos", "Show S01E01") // a TV opens many connections
+	c := j.track("live", "", "10.0.0.6", "", "5000 News")
+	j.counter(a).Add(1000)
+	j.counter(b).Add(500)
+	list := j.list()
+	if len(list) != 2 || list[0].Conns != 2 || list[0].Bytes != 1500 || list[1].Kind != "live" {
+		t.Fatalf("list: %+v", list)
+	}
+	// Only conversions count against the limit.
+	if _, ok := j.start(1, "Tiny", "10.0.0.7", "", "x"); !ok {
+		t.Error("a conversion was refused with none running")
+	}
+	if _, ok := j.start(1, "Tiny", "10.0.0.8", "", "y"); ok {
+		t.Error("a second conversion was allowed over the limit")
+	}
+	j.end(a)
+	j.end(b)
+	j.end(c)
+	if got := j.list(); len(got) != 1 || got[0].Kind != "converted" {
+		t.Errorf("after ending: %+v", got)
+	}
+}
+
+func TestStatusAndLog(t *testing.T) {
+	d := fakeDVR(t)
+	c, _ := dvr.New(d.URL)
+	settings, _ := config.Open("", config.Config{})
+	logs := NewLogBuffer(3)
+	b, _ := OpenBookmarks("")
+	srv := httptest.NewServer(New(Config{Name: "T", UUID: "u", Version: "t", DVR: c, Settings: settings, Bookmarks: b, FFmpeg: "no-such-ffmpeg", Logf: logs.Logf, Logs: logs}).Handler())
+	defer srv.Close()
+
+	var st struct {
+		Uptime   int64    `json:"uptime_s"`
+		FFmpegOK bool     `json:"ffmpeg_ok"`
+		FFmpeg   string   `json:"ffmpeg"`
+		Location string   `json:"location"`
+		Streams  []any    `json:"streams"`
+		Activity []string `json:"dvr_activity"`
+		Channels int      `json:"channels"`
+	}
+	resp, err := http.Get(srv.URL + "/api/state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	json.NewDecoder(resp.Body).Decode(&st)
+	resp.Body.Close()
+	if st.FFmpegOK || st.FFmpeg == "" || st.Channels != 3 || st.Activity == nil || st.Streams == nil || !strings.HasSuffix(st.Location, "/description.xml") {
+		t.Errorf("state: %+v", st)
+	}
+
+	// The log keeps the last lines and hands out the new ones.
+	for i := 0; i < 5; i++ {
+		logs.Logf("line %d", i)
+	}
+	var lg struct {
+		Lines []LogLine `json:"lines"`
+		Last  int64     `json:"last"`
+	}
+	get := func(after string) {
+		resp, err := http.Get(srv.URL + "/api/log?after=" + after)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lg.Lines = nil
+		json.NewDecoder(resp.Body).Decode(&lg)
+		resp.Body.Close()
+	}
+	get("0")
+	if len(lg.Lines) < 3 || lg.Lines[len(lg.Lines)-1].Text != "line 4" {
+		t.Fatalf("log: %+v", lg)
+	}
+	get(itoa(lg.Last))
+	if len(lg.Lines) != 0 {
+		t.Errorf("lines after the last: %+v", lg.Lines)
+	}
+}

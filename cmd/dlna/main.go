@@ -83,11 +83,14 @@ func main() {
 	}
 	uuid := stableUUID(*name, *dvrURL)
 
+	logs := server.NewLogBuffer(500)
+	var adv *ssdp.Advertiser
 	srv := server.New(server.Config{
 		Name: *name, UUID: uuid, Version: version,
 		DVR: client, DVRPublic: *dvrPublic, Settings: settings, FFmpeg: *ffmpeg,
 		SelfURL: "http://127.0.0.1:" + portStr, Debug: *debug, Bookmarks: bookmarks,
-		Logf: log.Printf,
+		Logf: logs.Logf, Logs: logs, ConfigPath: *configFile,
+		Discovery: func() ssdp.Stats { return adv.Stats() },
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -100,7 +103,7 @@ func main() {
 		defer cancel()
 		hs.Shutdown(sctx)
 	}()
-	adv := &ssdp.Advertiser{UUID: uuid, Port: port, Server: server.ServerHeader(version), Host: *advertise, Iface: ifi, Logf: log.Printf}
+	adv = &ssdp.Advertiser{UUID: uuid, Port: port, Server: server.ServerHeader(version), Host: *advertise, Iface: ifi, Logf: logs.Logf}
 	go func() {
 		if err := adv.Run(ctx); err != nil {
 			fatal(err)
