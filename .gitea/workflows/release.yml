@@ -1,0 +1,52 @@
+name: release
+# A pushed tag v1.2.3 gets a release here with the 14 release files: built as the
+# build workflow builds them, so they are the same as GitHub's for that tag.
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # Keep the version in step with go.mod.
+    container:
+      image: golang:1.25
+    steps:
+      - uses: builtin:checkout
+        with:
+          fetch-depth: 0
+      - name: tools
+        env:
+          # The golang image pins its own Go, and nfpm needs a newer one.
+          GOTOOLCHAIN: auto
+        run: |
+          apt-get update -qq && apt-get install -y -qq zip jq >/dev/null
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.48.0
+      - name: build
+        run: PATH="$PATH:$(go env GOPATH)/bin" packaging/build.sh "$(packaging/version.sh)"
+      - name: report
+        run: |
+          GOTOOLCHAIN="go$(cat .go-version)" go version
+          (cd dist && sha256sum *)
+      - name: release
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          auth="Authorization: token $TOKEN"
+          # The release of this tag, made now if there is none.
+          id=$(curl -fsS -H "$auth" "$API/releases/tags/$TAG" | jq -r .id) || id=
+          if [ -z "$id" ]; then
+            body=$(jq -n --arg t "$TAG" '{tag_name: $t, name: ($t | ltrimstr("v")), body: "The release files, built by this repository'"'"'s release workflow."}')
+            id=$(curl -fsS -X POST -H "$auth" -H "Content-Type: application/json" "$API/releases" -d "$body" | jq -r .id)
+          fi
+          # Attach each file, in place of one of the same name.
+          assets=$(curl -fsS -H "$auth" "$API/releases/$id/assets")
+          for f in dist/*; do
+            n=$(basename "$f")
+            for old in $(echo "$assets" | jq -r --arg n "$n" '.[] | select(.name == $n) | .id'); do
+              curl -fsS -X DELETE -H "$auth" "$API/releases/$id/assets/$old"
+            done
+            curl -fsS -X POST -H "$auth" -F "attachment=@$f" "$API/releases/$id/assets?name=$n" >/dev/null
+            echo "attached $n"
+          done
