@@ -1137,3 +1137,12 @@ func TestDefaultIsThroughTheBridge(t *testing.T) {
 		}
 	}
 }
+
+// A server made by New must not register in a tight loop: 0.99.2 left the
+// intervals at zero and sent dozens of registrations a second.
+func TestRegisterIntervalsSet(t *testing.T) {
+	s := New(Config{})
+	if s.regEvery < time.Minute || s.regRetryMin < time.Second || s.regRetryMax < s.regRetryMin {
+		t.Fatalf("intervals %s %s %s", s.regEvery, s.regRetryMin, s.regRetryMax)
+	}
+}
