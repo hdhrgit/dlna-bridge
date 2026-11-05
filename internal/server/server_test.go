@@ -1196,6 +1196,8 @@ func TestPlanAhead(t *testing.T) {
 			io.WriteString(w, `{"ID":"6","Airing":{"Title":"Nova"},"Completed":true,"Processed":true,"FileSize":1000,"Commercials":`+six+`}`)
 		case "/dvr/files/8":
 			t.Error("asked for a recording with few breaks")
+		case "/dvr/files/9":
+			io.WriteString(w, `{"ID":"9","Airing":{"Title":"News"},"Completed":true,"Processed":true,"FileSize":1000,"Commercials":[10,20,30,40]}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -1238,6 +1240,15 @@ func TestPlanAhead(t *testing.T) {
 	srv.planNewest(ctx, seen, false)
 	if len(planned) != 1 {
 		t.Errorf("planned %v while no client cuts", planned)
+	}
+	// A lower cut-off plans the recording with few breaks too.
+	srv.cfg.Settings, srv.cfg.PlanAheadBreaks = settings, 2
+	mu.Lock()
+	newest = `[{"id":"9","completed":true,"processed":true,"commercials":[10,20,30,40]}]`
+	mu.Unlock()
+	srv.planNewest(ctx, seen, false)
+	if len(planned) != 2 {
+		t.Errorf("planned %v with a cut-off of 2", planned)
 	}
 }
 

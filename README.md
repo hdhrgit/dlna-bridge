@@ -67,6 +67,7 @@ LAN address on the DVR's port. Open `http://HOST:8200/` to check the bridge reac
 | `-trusted-proxies` | `DLNA_TRUSTED_PROXIES` | | addresses or ranges of the proxies in front of the server, whose `X-Forwarded-For` and `X-Forwarded-Host` are believed |
 | `-iface` | `DLNA_IFACE` | | the interface for discovery |
 | `-plan-ahead` | `DLNA_PLAN_AHEAD` | `true` | work out the cuts of each new recording once the DVR has marked its breaks (see [Commercials](#commercials)) |
+| `-plan-ahead-breaks` | `DLNA_PLAN_AHEAD_BREAKS` | `6` | plan ahead only recordings with at least this many breaks; `1` plans every one |
 | `-ffmpeg` | `DLNA_FFMPEG` | `ffmpeg` | |
 | `-streams`, `-keep-ads`, `-max-transcodes` | `DLNA_STREAMS`, `DLNA_KEEP_ADS`, `DLNA_MAX_TRANSCODES` | | the first-run default profile, until the settings page saves a file |
 
@@ -182,7 +183,7 @@ replaced when the recording's size or marked breaks change.
 So that the first play of a new recording does not wait for that, the bridge works out its cuts as soon as the
 DVR has marked its breaks. Only new recordings: every 2 minutes it asks the DVR for its 25 newest
 (`/api/v1/all?sort=date_added&order=desc&limit=25`, a few kilobytes, not the whole library) and plans those that
-were finished and marked since the bridge started and have 6 breaks or more, one at a time, each a few hundred
+were finished and marked since the bridge started and have 6 breaks or more (`-plan-ahead-breaks`), one at a time, each a few hundred
 range reads. One with fewer breaks is planned in well under a second on first play, and planning ahead a
 recording that is never watched would cost the DVR the reads for nothing. The library
 already there is planned on first play, as before. It needs the state directory, and does nothing while no
