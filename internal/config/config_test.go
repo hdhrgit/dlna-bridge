@@ -69,7 +69,7 @@ func TestStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := s.Get(); got.Default.Mode != ModeDirect || got.MaxTranscodes != 2 || got.RecentHours != 24 {
+	if got := s.Get(); got.Default.Mode != ModeProxy || got.MaxTranscodes != 2 || got.RecentHours != 24 {
 		t.Errorf("defaults: %+v", got)
 	}
 	c := s.Get()

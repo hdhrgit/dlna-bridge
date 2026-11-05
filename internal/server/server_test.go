@@ -1121,3 +1121,19 @@ func TestNoRegistrationWithoutAName(t *testing.T) {
 	default:
 	}
 }
+
+// With nothing configured, TVs are sent through the bridge, which works for every
+// TV; going straight to the DVR is something to opt into.
+func TestDefaultIsThroughTheBridge(t *testing.T) {
+	s := newServerWith(t, config.Config{})
+	_, d := browse(t, s.URL, "live", "BrowseDirectChildren", 0, 0)
+	if len(d.Items) == 0 || !strings.HasPrefix(d.Items[0].Res.URL, s.URL+"/stream/live/") || strings.Contains(d.Items[0].Res.URL, "/devices/ANY/") {
+		t.Fatalf("a live channel's URL: %+v", d.Items)
+	}
+	_, d = browse(t, s.URL, "recgroup/g1", "BrowseDirectChildren", 0, 0)
+	for _, it := range d.Items {
+		if !strings.HasPrefix(it.Res.URL, s.URL+"/stream/") {
+			t.Errorf("recording %s is sent to %s", it.ID, it.Res.URL)
+		}
+	}
+}

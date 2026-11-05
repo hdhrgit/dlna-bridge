@@ -35,7 +35,7 @@ func main() {
 	advertisePort := flag.Int("advertise-port", envInt("DLNA_ADVERTISE_PORT", 0), "port to announce to the TVs, when they reach the server through a proxy on another one (default: the port of -listen)")
 	proxies := flag.String("trusted-proxies", envOr("DLNA_TRUSTED_PROXIES", ""), "addresses or ranges of the proxies in front of this server, whose X-Forwarded-For and X-Forwarded-Host are believed")
 	iface := flag.String("iface", envOr("DLNA_IFACE", ""), "network interface for discovery (default: the system's)")
-	streams := flag.String("streams", envOr("DLNA_STREAMS", "direct"), "first-run default for clients: direct (play from the DVR) or proxy (through this server)")
+	streams := flag.String("streams", envOr("DLNA_STREAMS", "proxy"), "first-run default for clients: proxy (through this server, works for every TV) or direct (play from the DVR, an optimization)")
 	configFile := flag.String("config", envOr("DLNA_CONFIG", ""), "settings file the web page writes (default: config.json in -state)")
 	keepAds := flag.Bool("keep-ads", envBool("DLNA_KEEP_ADS"), "first-run default: play recordings with their commercials in")
 	state := flag.String("state", envOr("DLNA_STATE", ""), "directory for bookmarks.json (default: keep bookmarks in memory)")

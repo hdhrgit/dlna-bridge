@@ -17,7 +17,7 @@ import (
 // Modes say where a client's streams come from.
 const (
 	ModeDirect    = "direct"    // the client plays the DVR's own stream
-	ModeProxy     = "proxy"     // the same stream, passed through this server with DLNA headers
+	ModeProxy     = "proxy"     // the same stream, passed through this server with DLNA headers (the default)
 	ModeTranscode = "transcode" // converted by ffmpeg to the settings below
 )
 
@@ -99,7 +99,7 @@ func DefaultTranscode() Transcode {
 func (c *Config) Fill() {
 	fill := func(p *Profile) {
 		if p.Mode == "" {
-			p.Mode = ModeDirect
+			p.Mode = ModeProxy // works for every TV; direct is an optimization to opt into
 		}
 		if p.Ads == "" {
 			p.Ads = AdsCut

@@ -4,13 +4,14 @@ A DLNA media server for a Channels DVR, so TVs without a Channels app (LG, Samsu
 and recordings.
 
 ```
- TV ──browse──► dlna (:8200) ──listing──► Channels DVR (:8089)
-  └───────────── plays the DVR's own stream ──────┘
+ TV ──browse and play──► dlna (:8200) ──listing and streams──► Channels DVR (:8089)
 ```
 
-By default the TVs only browse the bridge and play `/devices/ANY/channels/<number>/stream.mpg` and
-`/dvr/files/<id>/stream.mpg` straight from the DVR, at full quality. Each kind of client can be set up differently
-on the settings page: see [Clients](#clients).
+By default the TVs browse the bridge and play through it: it passes the DVR's own stream on, at full quality,
+with the headers TVs expect. That works for every TV, including those that insist on a `HEAD` request, which the DVR
+refuses. A client can be set to take the DVR's stream *directly* instead, which spares the bridge the traffic, but
+it is an optimization that not every TV accepts; or to have it converted. Each kind of client can be set up
+differently on the settings page: see [Clients](#clients).
 
 ## Run
 
@@ -143,7 +144,7 @@ Each client and the default have a **profile**:
 
 | | |
 |---|---|
-| Streams | **Direct**: the client plays the DVR's own stream. **Through the bridge**: the same stream passed through, with the DLNA headers some TVs want (try it if a TV lists channels but will not play). **Converted**: ffmpeg converts it, below. |
+| Streams | **Through the bridge** (the default): the DVR's stream passed through, with the DLNA headers TVs expect. **Direct**: the client plays the DVR's own stream, which the bridge never sees: an optimization for TVs that accept it (the LGs do; a Samsung does not). **Converted**: ffmpeg converts it, below. |
 | Commercials | **Cut out**, or **Play** (pass through). |
 | Converted | The largest width and height (the picture is fitted inside, both sides even), frames per second, video and audio kbps, audio channels, H.264 profile (baseline has no B-frames and no CABAC, for small decoders). Live channels can come from a small stream the DVR makes first, which costs it less than decoding the full picture here, but the DVR's small stream runs about 10 s behind its full one; leave it off where delay matters. A live channel is kept near its live edge: a client that falls more than 8 s behind skips ahead to the newest keyframe. The result is an MPEG-TS with no length, so it does not seek. |
 
