@@ -17,6 +17,7 @@ var uiHTML []byte
 
 func (s *Server) ui(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store") // a new version shows at once
 	w.Write(uiHTML)
 }
 
@@ -109,6 +110,9 @@ func (s *Server) apiSetConfig(w http.ResponseWriter, r *http.Request) {
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
+	// Never from a cache: the page asks the same URL again until something
+	// changes, and a browser that kept the first answer would never see it.
+	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(v)
 }

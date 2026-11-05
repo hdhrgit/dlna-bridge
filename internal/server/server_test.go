@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"encoding/xml"
@@ -1357,5 +1358,30 @@ func TestStreamLog(t *testing.T) {
 	defer mu.Unlock()
 	if len(logs) != 2 || logs[0] != "http: GET /stream/adfree/7 bytes=0-1023 Lavf/58 from 10.0.0.7" || !strings.HasPrefix(logs[1], "http: GET /stream/adfree/7 bytes=0-1023: 206, 1024 bytes in ") {
 		t.Errorf("logs: %q", logs)
+	}
+}
+
+// The page and its data are never kept by a browser cache, and there is a
+// favicon.
+func TestNoStoreAndFavicon(t *testing.T) {
+	s := newTestServer(t, false)
+	for _, p := range []string{"/", "/api/log?after=0", "/api/state"} {
+		resp, err := http.Get(s.URL + p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.Header.Get("Cache-Control") != "no-store" {
+			t.Errorf("%s: Cache-Control %q", p, resp.Header.Get("Cache-Control"))
+		}
+	}
+	resp, err := http.Get(s.URL + "/favicon.ico")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "image/png" || !bytes.HasPrefix(b, []byte("\x89PNG")) {
+		t.Errorf("favicon: %d %s %d bytes", resp.StatusCode, resp.Header.Get("Content-Type"), len(b))
 	}
 }

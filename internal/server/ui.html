@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DLNA bridge</title>
+<link rel="icon" type="image/png" href="icons/logo48.png">
 <style>
   :root { --bg:#fff; --fg:#1d2330; --muted:#5d6678; --line:#d9dde5; --card:#f6f7f9; --accent:#2457d6; --bad:#b3261e; --good:#1b7a3b; }
   @media (prefers-color-scheme: dark) { :root { --bg:#14171d; --fg:#e6e9ef; --muted:#9aa3b5; --line:#2c323d; --card:#1b1f27; --accent:#7aa2ff; --bad:#ff8a80; --good:#6fd28d; } }
@@ -30,6 +31,8 @@
   .dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:6px; background:var(--muted); } .dot.good { background:var(--good); } .dot.bad { background:var(--bad); }
   pre.log { margin:0; max-height:360px; overflow:auto; font:12px/1.4 ui-monospace, monospace; white-space:pre-wrap; word-break:break-all; }
   pre.log .bad { color:var(--bad); } pre.log .t { color:var(--muted); }
+  #logpanel.max { position:fixed; inset:0; z-index:10; background:var(--bg); padding:16px; display:flex; flex-direction:column; }
+  #logpanel.max .card { flex:1; display:flex; min-height:0; margin-bottom:0; } #logpanel.max pre.log { max-height:none; flex:1; }
   .ok { color:var(--good); } .err { color:var(--bad); } .tag { font-size:12px; color:var(--muted); border:1px solid var(--line); border-radius:10px; padding:0 8px; }
 </style>
 </head>
@@ -51,10 +54,13 @@
   <div class="card"><table id="seen"></table></div>
 
   <h2>Recent log</h2>
+  <div id="logpanel">
   <div class="row" style="margin-bottom:6px"><input id="logfilter" placeholder="Filter, for example an address or 'transcode'" style="max-width:340px">
     <label class="check" style="margin:0"><input type="checkbox" id="logpause">Pause</label>
-    <label class="check" style="margin:0"><input type="checkbox" id="logbad">Only problems</label></div>
+    <label class="check" style="margin:0"><input type="checkbox" id="logbad">Only problems</label>
+    <button id="logmax" title="Fill the window with the log (Esc to go back)">Maximize</button></div>
   <div class="card"><pre class="log" id="log"></pre></div>
+  </div>
 
   <h2>Default</h2>
   <p>For any client that matches none of the clients below.</p>
@@ -173,12 +179,18 @@ function renderLog() {
 }
 async function pollLog() {
   if ($('logpause').checked) return;
-  const j = await (await fetch('api/log?after=' + logSeq)).json();
+  const j = await (await fetch('api/log?after=' + logSeq, { cache: 'no-store' })).json();
   if (j.last < logSeq) { logSeq = 0; logLines = []; return; } // the bridge restarted: start again
   logSeq = j.last; logLines = logLines.concat(j.lines).slice(-500);
   if (j.lines.length) renderLog();
 }
 $('logfilter').oninput = renderLog; $('logbad').onchange = renderLog;
+function maximizeLog(on) {
+  $('logpanel').classList.toggle('max', on); $('logmax').textContent = on ? 'Restore' : 'Maximize';
+  document.body.style.overflow = on ? 'hidden' : ''; $('log').scrollTop = $('log').scrollHeight;
+}
+$('logmax').onclick = () => maximizeLog(!$('logpanel').classList.contains('max'));
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && $('logpanel').classList.contains('max')) maximizeLog(false); });
 
 function addFrom(c) {
   cfg.clients.push({ name: 'New client', ips: [c.ip], user_agents: [], profile: JSON.parse(JSON.stringify({ ...cfg.default, transcode: cfg.default.transcode.max_width ? cfg.default.transcode : defaults })) });
@@ -186,7 +198,7 @@ function addFrom(c) {
 }
 
 async function load(keepEdits) {
-  const st = await (await fetch('api/state')).json();
+  const st = await (await fetch('api/state', { cache: 'no-store' })).json();
   lastState = st; defaults = st.transcode_defaults; saved = st.saved;
   $('title').textContent = st.name + ' · DLNA bridge';
   if (!keepEdits) { cfg = st.config; render(); } else renderSeen();
