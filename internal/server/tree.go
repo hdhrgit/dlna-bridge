@@ -76,8 +76,8 @@ func atoiOr(s string, def int) (int, error) {
 	return strconv.Atoi(s)
 }
 
-// Object ids. Folders: live, fav, sources, src/<source>, rec, recgroup/<group
-// id>, recnow. Items are the folder's id, a slash and the channel number or
+// Object ids. Folders: live, fav, sources, src/<source>, rec (TV Shows),
+// recgroup/<group id>, movies, recnow. Items are the folder's id, a slash and the channel number or
 // file id, so one item in two folders has two ids; srcch/<source>/<number> is a
 // channel in a source's folder.
 const (
@@ -88,16 +88,21 @@ const (
 	idRecordings = "rec"
 	idRecNow     = "recnow"
 	idRecent     = "recent"
+	idMovies     = "movies"
 )
+
+// movieGroup is the group the DVR files every movie under. The movies get a
+// folder of their own at the top, beside the shows.
+const movieGroup = "movies"
 
 func (s *Server) children(ctx context.Context, v view, id string) ([]object, error) {
 	switch {
 	case id == idRoot:
 		var out []object
-		for _, f := range []string{idLive, idFavorites, idRecent, idRecordings, idRecNow, idSources} {
+		for _, f := range []string{idLive, idFavorites, idRecent, idRecordings, idMovies, idRecNow, idSources} {
 			o, err := s.lookup(ctx, v, f)
 			if err == errNoSuchObject {
-				continue // no favorites, or nothing recording
+				continue // no favorites, no movies, or nothing recording
 			}
 			if err != nil {
 				return nil, err
@@ -118,6 +123,8 @@ func (s *Server) children(ctx context.Context, v view, id string) ([]object, err
 		return s.recordingNow(ctx, v)
 	case id == idRecent:
 		return s.recentRecordings(ctx, v)
+	case id == idMovies:
+		return s.movies(ctx, v)
 	case strings.HasPrefix(id, "recgroup/"):
 		_, items, err := s.recordingTree(ctx, v)
 		if err != nil {
@@ -134,7 +141,8 @@ func (s *Server) children(ctx context.Context, v view, id string) ([]object, err
 		}
 		return out, nil
 	case strings.HasPrefix(id, "live/"), strings.HasPrefix(id, "fav/"), strings.HasPrefix(id, "srcch/"),
-		strings.HasPrefix(id, "rec/"), strings.HasPrefix(id, "recnow/"), strings.HasPrefix(id, "recent/"):
+		strings.HasPrefix(id, "rec/"), strings.HasPrefix(id, "recnow/"), strings.HasPrefix(id, "recent/"),
+		strings.HasPrefix(id, "movies/"):
 		return nil, nil // items have no children
 	}
 	return nil, errNoSuchObject
@@ -172,12 +180,18 @@ func (s *Server) lookup(ctx context.Context, v view, id string) (object, error) 
 		}
 		return find(folders, id)
 	case id == idRecordings:
-		return folder("Recordings", func() ([]object, error) {
+		return folder("TV Shows", func() ([]object, error) {
 			folders, _, err := s.recordingTree(ctx, v)
 			return folders, err
 		})
 	case id == idRecent:
 		o, err := folder("Recent recordings", func() ([]object, error) { return s.recentRecordings(ctx, v) })
+		if err == nil && o.Children == 0 {
+			err = errNoSuchObject
+		}
+		return o, err
+	case id == idMovies:
+		o, err := folder("Movies", func() ([]object, error) { return s.movies(ctx, v) })
 		if err == nil && o.Children == 0 {
 			err = errNoSuchObject
 		}
@@ -220,6 +234,12 @@ func (s *Server) lookup(ctx context.Context, v view, id string) (object, error) 
 			return object{}, err
 		}
 		return find(items, id)
+	case strings.HasPrefix(id, "movies/"):
+		items, err := s.movies(ctx, v)
+		if err != nil {
+			return object{}, err
+		}
+		return find(items, id)
 	case strings.HasPrefix(id, "recnow/"):
 		items, err := s.recordingNow(ctx, v)
 		if err != nil {
@@ -234,6 +254,17 @@ func (s *Server) lookup(ctx context.Context, v view, id string) (object, error) 
 		return find(items, id)
 	}
 	return object{}, errNoSuchObject
+}
+
+// bookmarkID is the id a resume point is kept under: one recording is in
+// several folders, under an id in each, and resumes the same from all of them.
+func bookmarkID(id string) string {
+	for _, p := range []string{"recent/", "recnow/", "movies/"} {
+		if rest, ok := strings.CutPrefix(id, p); ok {
+			return "rec/" + rest
+		}
+	}
+	return id
 }
 
 func find(objs []object, id string) (object, error) {
@@ -373,7 +404,8 @@ func (s *Server) recordingObject(v view, f dvr.Recording, id, parent string) obj
 	return o
 }
 
-// recordingTree is the show folders and the recordings in them.
+// recordingTree is the show folders and the recordings in them. The movies
+// are left out: they have a folder of their own.
 func (s *Server) recordingTree(ctx context.Context, v view) (folders, items []object, err error) {
 	files, err := s.cfg.DVR.Recordings(ctx)
 	if err != nil {
@@ -392,6 +424,9 @@ func (s *Server) recordingTree(ctx context.Context, v view) (folders, items []ob
 	var order []string
 	for _, f := range files {
 		gid := string(f.GroupID)
+		if gid == movieGroup {
+			continue
+		}
 		if gid == "" {
 			gid = "_" + f.Airing.Title // no folder from the DVR: group by show title
 		}
@@ -416,6 +451,26 @@ func (s *Server) recordingTree(ctx context.Context, v view) (folders, items []ob
 	}
 	sort.SliceStable(folders, func(i, j int) bool { return strings.ToLower(folders[i].Title) < strings.ToLower(folders[j].Title) })
 	return folders, items, nil
+}
+
+// movies lists the recorded movies, newest first, each by its title alone.
+func (s *Server) movies(ctx context.Context, v view) ([]object, error) {
+	files, err := s.cfg.DVR.Recordings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []object
+	for _, f := range files {
+		if string(f.GroupID) != movieGroup {
+			continue
+		}
+		o := s.recordingObject(v, f, "movies/"+string(f.ID), idMovies)
+		if f.Airing.Title != "" {
+			o.Title = f.Airing.Title
+		}
+		out = append(out, o)
+	}
+	return out, nil
 }
 
 // recordingNow lists the recordings the DVR has not finished, newest first.

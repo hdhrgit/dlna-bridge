@@ -38,8 +38,9 @@ func fakeDVR(t *testing.T) *httptest.Server {
 			{"ID":18,"GroupID":"g1","Airing":{"Title":"Nova"},"Duration":60,"CreatedAt":1793600000000,"Completed":true,"Processed":true,"FileSize":1000,"Commercials":[10,20,50,70],"PlaybackTime":30},
 			{"ID":"19","Airing":{"Title":"Loose"},"Duration":60,"CreatedAt":1793600000000,"Completed":true},
 			{"ID":"20","GroupID":"g1","Deleted":true},
-			{"ID":"21","GroupID":"g2","Airing":{"Title":"Live Show"},"CreatedAt":1793600000}]`,
-		"/dvr/groups": `[{"ID":"g1","Name":"Nova","Image":"http://x/nova.jpg"},{"ID":"g2","Name":"Live Show"}]`,
+			{"ID":"21","GroupID":"g2","Airing":{"Title":"Live Show"},"CreatedAt":1793600000},
+			{"ID":"30","GroupID":"movies","Airing":{"Title":"The Caine Mutiny (1954)"},"Duration":7500,"CreatedAt":1790000000,"Completed":true}]`,
+		"/dvr/groups": `[{"ID":"g1","Name":"Nova","Image":"http://x/nova.jpg"},{"ID":"g2","Name":"Live Show"},{"ID":"movies","Name":"Movies"}]`,
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/dvr/files/17/stream.mpg" { // like the DVR: no HEAD, ranges answer 206
@@ -152,13 +153,13 @@ func browse(t *testing.T, base, id, flag string, start, count int) (browseResult
 func TestBrowseRoot(t *testing.T) {
 	s := newTestServer(t, false)
 	br, d := browse(t, s.URL, "0", "BrowseDirectChildren", 0, 0)
-	if br.TotalMatches != 6 || len(d.Containers) != 6 {
+	if br.TotalMatches != 7 || len(d.Containers) != 7 {
 		t.Fatalf("root: %+v", d)
 	}
 	for i, want := range []struct {
 		title string
 		kids  int
-	}{{"Live TV", 3}, {"Favorites", 1}, {"Recent recordings", 3}, {"Recordings", 3}, {"Recording now", 1}, {"Channels by source", 2}} {
+	}{{"Live TV", 3}, {"Favorites", 1}, {"Recent recordings", 3}, {"TV Shows", 3}, {"Movies", 1}, {"Recording now", 1}, {"Channels by source", 2}} {
 		if got := d.Containers[i]; got.Title != want.title || got.ChildCount != want.kids {
 			t.Errorf("folder %d: %+v, want %s with %d", i, got, want.title, want.kids)
 		}
@@ -203,6 +204,28 @@ func TestBrowseFavorites(t *testing.T) {
 	_, d = browse(t, s.URL, "fav/5000", "BrowseMetadata", 0, 0)
 	if len(d.Items) != 1 {
 		t.Errorf("favorite metadata: %+v", d)
+	}
+}
+
+// The movies have a folder of their own, titled by name alone, and are not
+// among the shows.
+func TestBrowseMovies(t *testing.T) {
+	s := newTestServer(t, false)
+	_, d := browse(t, s.URL, "movies", "BrowseDirectChildren", 0, 0)
+	if len(d.Items) != 1 || d.Items[0].ID != "movies/30" || d.Items[0].Title != "The Caine Mutiny (1954)" {
+		t.Fatalf("movies: %+v", d.Items)
+	}
+	_, meta := browse(t, s.URL, "movies/30", "BrowseMetadata", 0, 0)
+	if len(meta.Items) != 1 || meta.Items[0].ID != "movies/30" {
+		t.Errorf("movie metadata: %+v", meta)
+	}
+	// A Samsung's resume point, set from the Movies folder, comes back there.
+	if code, body := soap(t, s.URL, "ContentDirectory", "X_SetBookmark", "<CategoryType>0</CategoryType><RID>0</RID><ObjectID>movies/30</ObjectID><PosSecond>600</PosSecond>"); code != 200 {
+		t.Fatalf("X_SetBookmark: %d %s", code, body)
+	}
+	_, meta = browse(t, s.URL, "movies/30", "BrowseMetadata", 0, 0)
+	if len(meta.Items) != 1 || !strings.Contains(meta.Items[0].DCM, "BM=600") {
+		t.Errorf("movie bookmark: %+v", meta.Items)
 	}
 }
 

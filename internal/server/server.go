@@ -181,7 +181,7 @@ func (s *Server) contentDirectory(w http.ResponseWriter, r *http.Request) {
 		writeResponse(w, cdService, a.Name, [][2]string{{"FeatureList", featureList}})
 	case "X_SetBookmark":
 		pos, _ := strconv.Atoi(a.Args["PosSecond"])
-		if err := s.cfg.Bookmarks.Set(a.Args["ObjectID"], pos); err != nil {
+		if err := s.cfg.Bookmarks.Set(bookmarkID(a.Args["ObjectID"]), pos); err != nil {
 			s.cfg.Logf("bookmark: %v", err)
 		}
 		writeResponse(w, cdService, a.Name, nil)

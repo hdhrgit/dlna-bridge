@@ -123,9 +123,11 @@ names it by that TV's own address.
 * **Channels by source**: a folder for each source (tuner, M3U list...), its channels played from that source.
 * **Recent recordings**: what started in the last 24 hours (the page sets how many), newest first, each titled
   with its show, since a TV has no other way to see what is new. Left out when there are none.
-* **Recordings**: a folder per show (the DVR's groups), newest first, episodes titled `S01E02 Title`. They
+* **TV Shows**: a folder per show (the DVR's groups), newest first, episodes titled `S01E02 Title`. They
   take byte ranges, so the TVs can seek. Samsung TVs save where they stopped (`X_SetBookmark`) and offer to
   resume; before that, they resume where the Channels apps left off.
+* **Movies**: the recorded movies (the DVR's Movies group), newest first, each by its title. They play and
+  seek like the shows. Left out when there are none.
 * **Recording now**: what the DVR has not finished recording, from the start. Left out when nothing is.
 
 ## Clients
