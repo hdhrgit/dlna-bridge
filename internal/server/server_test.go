@@ -1599,3 +1599,17 @@ func TestLogNothingNew(t *testing.T) {
 		t.Errorf("answer %s", b)
 	}
 }
+
+// A recording without a picture from the guide gets the bridge's icon, since
+// some TVs leave items without one out of the list.
+func TestRecordingArtFallback(t *testing.T) {
+	s := newTestServer(t, false)
+	_, d := browse(t, s.URL, "rec/19", "BrowseMetadata", 0, 0) // "Loose": no image
+	if len(d.Items) != 1 {
+		t.Fatalf("items: %+v", d.Items)
+	}
+	_, raw := soap(t, s.URL, "ContentDirectory", "Browse", "<ObjectID>rec/19</ObjectID><BrowseFlag>BrowseMetadata</BrowseFlag>")
+	if !strings.Contains(raw, "/icons/logo120.png") {
+		t.Errorf("no fallback picture in %s", raw)
+	}
+}
