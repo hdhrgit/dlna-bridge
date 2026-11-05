@@ -1385,3 +1385,92 @@ func TestNoStoreAndFavicon(t *testing.T) {
 		t.Errorf("favicon: %d %s %d bytes", resp.StatusCode, resp.Header.Get("Content-Type"), len(b))
 	}
 }
+
+// A TV subscribed to ContentDirectory events is told when the DVR's newest
+// recordings change, with a higher SystemUpdateID and the next SEQ; a renewal
+// of an unknown subscription is refused so the TV subscribes anew; after
+// UNSUBSCRIBE no more events come.
+func TestChangeEvents(t *testing.T) {
+	var mu sync.Mutex
+	newest := `[{"id":"5","completed":false}]`
+	d := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.URL.Path == "/api/v1/all" {
+			io.WriteString(w, newest)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer d.Close()
+	type event struct{ seq, body string }
+	events := make(chan event, 10)
+	tv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		events <- event{r.Header.Get("Seq"), string(b)}
+	}))
+	defer tv.Close()
+	c, _ := dvr.New(d.URL)
+	srv := New(Config{DVR: c, Settings: mustSettings(t, config.Config{})})
+	srv.watchEvery = 20 * time.Millisecond
+	s := httptest.NewServer(srv.Handler())
+	defer s.Close()
+	sub := func(h map[string]string) *http.Response {
+		req, _ := http.NewRequest("SUBSCRIBE", s.URL+"/evt/ContentDirectory", nil)
+		for k, v := range h {
+			req.Header.Set(k, v)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp
+	}
+	resp := sub(map[string]string{"Callback": "<" + tv.URL + "/evt>", "Nt": "upnp:event"})
+	sid := resp.Header.Get("Sid")
+	first := <-events
+	if first.seq != "0" {
+		t.Fatalf("first event SEQ %q", first.seq)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go srv.WatchChanges(ctx)
+	time.Sleep(60 * time.Millisecond) // the first look only notes what is there
+	mu.Lock()
+	newest = `[{"id":"5","completed":true}]`
+	mu.Unlock()
+	select {
+	case e := <-events:
+		if e.seq != "1" || !strings.Contains(e.body, "<ContainerUpdateIDs>0,") || e.body == first.body {
+			t.Errorf("change event: %+v", e)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no event after the recording finished")
+	}
+	if resp := sub(map[string]string{"Sid": "uuid:unknown"}); resp.StatusCode != http.StatusPreconditionFailed {
+		t.Errorf("renewing an unknown subscription: %d", resp.StatusCode)
+	}
+	if resp := sub(map[string]string{"Sid": sid}); resp.StatusCode != 200 {
+		t.Errorf("renewing: %d", resp.StatusCode)
+	}
+	req, _ := http.NewRequest("UNSUBSCRIBE", s.URL+"/evt/ContentDirectory", nil)
+	req.Header.Set("Sid", sid)
+	if resp, err := http.DefaultClient.Do(req); err == nil {
+		resp.Body.Close()
+	}
+	mu.Lock()
+	newest = `[{"id":"6","completed":false},{"id":"5","completed":true}]`
+	mu.Unlock()
+	select {
+	case e := <-events:
+		t.Errorf("event after UNSUBSCRIBE: %+v", e)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+func TestWatchIntervalSet(t *testing.T) {
+	if s := New(Config{}); s.watchEvery < 30*time.Second {
+		t.Fatalf("watch every %s", s.watchEvery)
+	}
+}

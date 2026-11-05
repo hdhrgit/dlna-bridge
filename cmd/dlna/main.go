@@ -120,6 +120,7 @@ func main() {
 	defer stop()
 
 	go srv.KeepRegistered(ctx)
+	go srv.WatchChanges(ctx)
 	if *planAhead {
 		go srv.PlanAhead(ctx)
 	}

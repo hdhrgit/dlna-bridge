@@ -139,6 +139,11 @@ names it by that TV's own address.
   seek like the shows. Left out when there are none.
 * **Recording now**: what the DVR has not finished recording, from the start. Left out when nothing is.
 
+TVs keep the lists they have browsed. Every minute the bridge asks the DVR for its newest recordings (a few
+kilobytes), and when one starts, finishes or has its breaks marked, it tells the TVs that subscribed to its
+change events, so that they browse again. A TV that ignores the events shows the new recording when its folder
+is opened again, or after its media app is restarted.
+
 ## Clients
 
 Open `http://HOST:8200/`. Under *Clients that have connected* are the devices that have used the bridge, with
