@@ -1,7 +1,7 @@
 services:
   dlna:
     # The published image. `docker compose up -d --build` builds it from this source instead.
-    image: ghcr.io/hdhrgit/dlna-bridge:0.99.2
+    image: ghcr.io/hdhrgit/dlna-bridge:0.99.3
     build: .
     restart: unless-stopped
     init: true # reaps the ffmpegs
