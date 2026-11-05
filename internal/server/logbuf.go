@@ -44,5 +44,5 @@ func (b *LogBuffer) Since(seq int64) ([]LogLine, int64) {
 	for i < len(b.lines) && b.lines[i].Seq <= seq {
 		i++
 	}
-	return append([]LogLine(nil), b.lines[i:]...), b.seq
+	return append([]LogLine{}, b.lines[i:]...), b.seq // [] in JSON when none, not null
 }

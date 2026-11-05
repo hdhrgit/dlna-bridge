@@ -1580,3 +1580,22 @@ func TestDVREventStream(t *testing.T) {
 		t.Fatal("no event for the change made while the stream was down")
 	}
 }
+
+// With nothing new, the log answer has an empty list, not null: the page
+// added the null to its lines and then failed on every render.
+func TestLogNothingNew(t *testing.T) {
+	logs := NewLogBuffer(10)
+	logs.Logf("one")
+	srv := New(Config{Settings: mustSettings(t, config.Config{}), Logs: logs, Logf: logs.Logf})
+	s := httptest.NewServer(srv.Handler())
+	defer s.Close()
+	resp, err := http.Get(s.URL + "/api/log?after=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(b), `"lines":[]`) {
+		t.Errorf("answer %s", b)
+	}
+}
