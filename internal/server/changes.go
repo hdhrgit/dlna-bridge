@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -64,13 +65,22 @@ func (s *Server) unsubscribe(sid string) {
 	delete(s.subs, sid)
 }
 
-// changed raises the SystemUpdateID and tells the subscribed TVs, naming the
-// folders whose contents changed.
-func (s *Server) changed() {
+// The folders whose contents a change touches.
+var (
+	recordingFolders = []string{idRoot, idRecent, idRecordings, idMovies, idRecNow}
+	channelFolders   = []string{idLive, idFavorites, idSources} // titled with the show on now
+)
+
+// changed is changedFolders for the recordings.
+func (s *Server) changed() { s.changedFolders("recordings", recordingFolders) }
+
+// changedFolders raises the SystemUpdateID and tells the subscribed TVs,
+// naming the folders whose contents changed.
+func (s *Server) changedFolders(what string, folders []string) {
 	id := max(s.updateID.Load()+1, time.Now().Unix()/60%1000000)
 	s.updateID.Store(id)
 	var ids []string
-	for _, f := range []string{idRoot, idRecent, idRecordings, idMovies, idRecNow} {
+	for _, f := range folders {
 		ids = append(ids, f, fmt.Sprint(id))
 	}
 	props := [][2]string{{"SystemUpdateID", fmt.Sprint(id)}, {"ContainerUpdateIDs", strings.Join(ids, ",")}}
@@ -78,7 +88,7 @@ func (s *Server) changed() {
 	defer s.subsMu.Unlock()
 	now := time.Now()
 	var told []string
-	defer func() { s.cfg.Logf("recordings changed: update %d sent to %d TVs %v", id, len(told), told) }()
+	defer func() { s.cfg.Logf("%s changed: update %d sent to %d TVs %v", what, id, len(told), told) }()
 	for sid, sub := range s.subs {
 		if now.After(sub.expires) {
 			delete(s.subs, sid)
@@ -181,4 +191,60 @@ func (s *Server) newestSig(ctx context.Context) string {
 		fmt.Fprintf(&b, "%s %v %v %d;", n.ID, n.Completed, n.Processed, len(n.Commercials))
 	}
 	return b.String()
+}
+
+// guideEvery is how often WatchGuide looks at what is on now, guideAfter how
+// long past each step of the clock: shows change on the hour and the half
+// hour, so 10 s past 2:00, 2:05, 2:10...
+const (
+	guideEvery = 5 * time.Minute
+	guideAfter = 10 * time.Second
+)
+
+// nextGuideLook is the next time, after now, that is guideAfter past a whole
+// multiple of every on the clock.
+func nextGuideLook(now time.Time, every time.Duration) time.Time {
+	t := now.Truncate(every).Add(guideAfter)
+	for !t.After(now) {
+		t = t.Add(every)
+	}
+	return t
+}
+
+// WatchGuide looks at the show on now on each channel every guideEvery, just
+// past each step of the clock (2:00:10, 2:05:10...), and
+// when any changed tells the subscribed TVs that the channel folders changed:
+// their items are titled with the show on now, which a TV would otherwise keep
+// showing after it ended.
+func (s *Server) WatchGuide(ctx context.Context) {
+	last := ""
+	for {
+		// Fresh, not the copy kept for browsing: one fetched before the hour
+		// knows only the shows that have just ended.
+		s.cfg.DVR.ForgetGuide()
+		if now, err := s.cfg.DVR.NowPlaying(ctx); err == nil {
+			keys := make([]string, 0, len(now))
+			for k := range now {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			var b strings.Builder
+			for _, k := range keys {
+				b.WriteString(k + "=" + now[k] + ";")
+			}
+			if sig := b.String(); last != "" && sig != last {
+				s.changedFolders("shows on now", channelFolders)
+			}
+			last = b.String()
+		}
+		wait := s.guideEvery // tests use a short one, off the clock
+		if wait >= time.Minute {
+			wait = time.Until(nextGuideLook(time.Now(), wait))
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+	}
 }

@@ -1684,3 +1684,63 @@ func TestArtProxy(t *testing.T) {
 		t.Errorf("an address not handed out: %d", resp.StatusCode)
 	}
 }
+
+// When the show on now changes on a channel, the TVs are told that the
+// channel folders changed, once; while it stays the same, nothing is sent.
+func TestGuideEvents(t *testing.T) {
+	var mu sync.Mutex
+	title := "Evening News"
+	d := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.URL.Path == "/devices/ANY/guide/now" {
+			io.WriteString(w, `[{"Airings":[{"Channel":"5002","Time":`+itoa(time.Now().Unix()-60)+`,"Duration":3600,"Title":"`+title+`"}],"Channel":{"Number":"5002"}}]`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer d.Close()
+	bodies := make(chan string, 10)
+	tv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		bodies <- string(b)
+	}))
+	defer tv.Close()
+	c, _ := dvr.New(d.URL)
+	srv := New(Config{DVR: c, Settings: mustSettings(t, config.Config{})})
+	srv.guideEvery = 30 * time.Millisecond
+	srv.subscribe("uuid:tv", tv.URL+"/evt")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go srv.WatchGuide(ctx)
+	select {
+	case b := <-bodies:
+		t.Fatalf("an event before anything changed: %s", b)
+	case <-time.After(150 * time.Millisecond):
+	}
+	mu.Lock()
+	title = "Late Show"
+	mu.Unlock()
+	select {
+	case b := <-bodies:
+		if !strings.Contains(b, "<ContainerUpdateIDs>live,") || strings.Contains(b, "recent,") {
+			t.Errorf("event %s", b)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no event after the show on now changed")
+	}
+	select {
+	case b := <-bodies:
+		t.Errorf("a second event with nothing changed: %s", b)
+	case <-time.After(150 * time.Millisecond):
+	}
+}
+
+func TestNextGuideLook(t *testing.T) {
+	at := func(s string) time.Time { v, _ := time.Parse("15:04:05", s); return v }
+	for now, want := range map[string]string{"14:00:00": "14:00:10", "14:00:10": "14:05:10", "14:03:34": "14:05:10", "14:59:59": "15:00:10"} {
+		if got := nextGuideLook(at(now), 5*time.Minute).Format("15:04:05"); got != want {
+			t.Errorf("after %s: %s, want %s", now, got, want)
+		}
+	}
+}

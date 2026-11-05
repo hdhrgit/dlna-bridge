@@ -121,6 +121,7 @@ func main() {
 
 	go srv.KeepRegistered(ctx)
 	go srv.WatchChanges(ctx)
+	go srv.WatchGuide(ctx)
 	if *planAhead {
 		go srv.PlanAhead(ctx)
 	}

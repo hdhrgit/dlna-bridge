@@ -368,6 +368,9 @@ func (c *Client) ForgetRecordings() {
 	c.groups.forget()
 }
 
+// ForgetGuide drops the cached shows on now, so that the next ask fetches them.
+func (c *Client) ForgetGuide() { c.now.forget() }
+
 // Event is one line of the DVR's event stream: files.created, files.updated,
 // files.deleted, groups.updated, activities.set, hello...
 type Event struct {

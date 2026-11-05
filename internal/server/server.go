@@ -82,7 +82,7 @@ type Server struct {
 	regRetryMin, regRetryMax time.Duration
 	// planEvery is how often PlanAhead looks for new recordings, and
 	// watchEvery how often WatchChanges looks for changed ones.
-	planEvery, watchEvery time.Duration
+	planEvery, watchEvery, guideEvery time.Duration
 
 	// subs are the TVs subscribed to ContentDirectory events; updateID is
 	// the SystemUpdateID, which goes up when the recordings change.
@@ -106,7 +106,7 @@ func New(cfg Config) *Server {
 	s := &Server{cfg: cfg, started: time.Now(), now: time.Now, notices: make(chan struct{}, 8)}
 	s.plans.dir, s.plans.logf = cfg.PlansDir, cfg.Logf
 	s.regEvery, s.regRetryMin, s.regRetryMax = 30*time.Minute, 10*time.Second, 10*time.Minute
-	s.watchEvery = watchEvery
+	s.watchEvery, s.guideEvery = watchEvery, guideEvery
 	// Minutes since 1970 (mod a million): higher than before a restart, as a
 	// TV that remembers it expects.
 	s.updateID.Store(time.Now().Unix() / 60 % 1000000)
