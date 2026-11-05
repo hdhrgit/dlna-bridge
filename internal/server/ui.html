@@ -181,8 +181,9 @@ async function pollLog() {
   if ($('logpause').checked) return;
   const j = await (await fetch('api/log?after=' + logSeq, { cache: 'no-store' })).json();
   if (j.last < logSeq) { logSeq = 0; logLines = []; return; } // the bridge restarted: start again
-  logSeq = j.last; logLines = logLines.concat(j.lines).slice(-500);
-  if (j.lines.length) renderLog();
+  const lines = j.lines || [];
+  logSeq = j.last; logLines = logLines.concat(lines).slice(-500);
+  if (lines.length) renderLog();
 }
 $('logfilter').oninput = renderLog; $('logbad').onchange = renderLog;
 function maximizeLog(on) {
