@@ -73,6 +73,8 @@ func (s *Server) changed() {
 	s.subsMu.Lock()
 	defer s.subsMu.Unlock()
 	now := time.Now()
+	var told []string
+	defer func() { s.cfg.Logf("recordings changed: update %d sent to %d TVs %v", id, len(told), told) }()
 	for sid, sub := range s.subs {
 		if now.After(sub.expires) {
 			delete(s.subs, sid)
@@ -80,6 +82,7 @@ func (s *Server) changed() {
 		}
 		s.notify(sub.cb, sid, sub.seq, props)
 		sub.seq++
+		told = append(told, sub.cb)
 	}
 }
 
