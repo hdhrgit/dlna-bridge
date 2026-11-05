@@ -78,26 +78,6 @@ func (r Recording) AdFree(t float64) float64 {
 	return max(out, 0)
 }
 
-// RecordingTime is the time in the recording of t seconds into the version
-// without the breaks: the inverse of AdFree.
-func (r Recording) RecordingTime(t float64) float64 {
-	pos := 0.0 // where the stretch being kept starts
-	for i := 0; i+1 < len(r.Commercials); i += 2 {
-		from, to := r.Commercials[i], r.Commercials[i+1]
-		if to <= from || to <= pos {
-			continue
-		}
-		if from > pos {
-			if t < from-pos {
-				return pos + t
-			}
-			t -= from - pos
-		}
-		pos = to
-	}
-	return pos + t
-}
-
 // Created is when the recording started. The DVR gives seconds; older
 // versions gave milliseconds.
 func (r Recording) Created() time.Time {

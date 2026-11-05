@@ -148,7 +148,6 @@ Each client and the default have a **profile**:
 |---|---|
 | Streams | **Through the bridge** (the default): the DVR's stream passed through, with the DLNA headers TVs expect. **Direct**: the client plays the DVR's own stream, which the bridge never sees: an optimization for TVs that accept it (the LGs do; a Samsung does not). **Converted**: ffmpeg converts it, below. |
 | Commercials | **Cut out**, or **Play** (pass through). |
-| Seeking in cut recordings | **By bytes** (the default): the cut recording has a length and takes byte ranges, which every TV knows; the bridge works out all the cuts before the first byte. **By time**: the recording has no length and the TV asks for a time to start from (`TimeSeekRange.dlna.org`, `DLNA.ORG_OP=10`); it starts at once, and each cut is worked out just before playback reaches it. Not every TV seeks by time; try it on one first. |
 | Converted | The largest width and height (the picture is fitted inside, both sides even), frames per second, video and audio kbps, audio channels, H.264 profile (baseline has no B-frames and no CABAC, for small decoders). Live channels can come from a small stream the DVR makes first, which costs it less than decoding the full picture here, but the DVR's small stream runs about 10 s behind its full one; leave it off where delay matters. A live channel is kept near its live edge: a client that falls more than 8 s behind skips ahead to the newest keyframe. The result is an MPEG-TS with no length, so it does not seek. |
 
 At most *Conversions at once* run, across all clients; the rest get a 503. Each viewer has an ffmpeg of their
@@ -171,10 +170,6 @@ two for a movie with 17 breaks): the search for each mark starts from the frames
 estimates where the time is from the bitrate, instead of halving the file. The cut list is kept in memory for the
 32 recordings played last and in `plans` in the state directory, so a restart does not work it out again; it is
 replaced when the recording's size or marked breaks change.
-
-A client set to seek *by time* does not wait for the cut list: the bridge finds the first keyframe after the
-time asked for, sends from there, and finds each later break as the stream nears it. If a break cannot be found
-then, the rest of the recording is sent uncut.
 
 If the recording's video timestamps jump (a splice, an encoder restart), they no longer keep time with the DVR's
 marks, and cutting by them would remove the wrong stretches. The bridge notices, logs it once, and serves that

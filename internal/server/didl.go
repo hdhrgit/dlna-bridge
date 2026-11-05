@@ -37,10 +37,6 @@ const (
 	videoMIME    = "video/mpeg"
 	liveProtocol = "http-get:*:" + videoMIME + ":" + liveFeatures
 	recProtocol  = "http-get:*:" + videoMIME + ":" + recFeatures
-	// A recording with its breaks cut, for a client that seeks by time: no
-	// length and no byte ranges (OP=10).
-	timeProtocol = "http-get:*:" + videoMIME + ":" + timeFeatures
-	timeFeatures = "DLNA.ORG_OP=10;DLNA.ORG_CI=0;" + dlnaFlags
 	tsMIME       = "video/mp2t"
 	// A converted stream is a live MPEG-TS: no length, no seeking.
 	transcodeProtocol = "http-get:*:" + tsMIME + ":DLNA.ORG_OP=00;DLNA.ORG_CI=1;" + dlnaFlags
