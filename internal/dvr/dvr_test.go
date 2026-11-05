@@ -2,7 +2,11 @@ package dvr
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -97,5 +101,38 @@ func TestCachedContext(t *testing.T) {
 	defer close(block)
 	if _, err := c.get(ctx, time.Minute, time.Hour, func(context.Context) (int, error) { <-block; return 1, nil }); !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("err %v", err)
+	}
+}
+
+// Register sends the name and a stable identity as JSON, and returns the id the
+// DVR gives the client.
+func TestRegister(t *testing.T) {
+	var got struct {
+		method, path, ua, ctype string
+		body                    map[string]string
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got.method, got.path, got.ua, got.ctype = r.Method, r.URL.Path, r.Header.Get("User-Agent"), r.Header.Get("Content-Type")
+		json.NewDecoder(r.Body).Decode(&got.body)
+		io.WriteString(w, `{"alias":"","cid":"abc123","settings":{"client":{},"global":{}}}`)
+	}))
+	defer srv.Close()
+	c, _ := New(srv.URL)
+	c.UserAgent = "dlna-bridge/1"
+	cid, err := c.Register(context.Background(), "DLNA Bridge", "machine-1")
+	if err != nil || cid != "abc123" {
+		t.Fatalf("cid %q, err %v", cid, err)
+	}
+	if got.method != "POST" || got.path != "/dvr/clients/register" || got.ctype != "application/json" || got.ua != "dlna-bridge/1" ||
+		got.body["hostname"] != "DLNA Bridge" || got.body["machine_id"] != "machine-1" {
+		t.Errorf("request: %+v", got)
+	}
+
+	// A DVR that refuses, or answers with something else, is an error.
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) }))
+	defer bad.Close()
+	c2, _ := New(bad.URL)
+	if _, err := c2.Register(context.Background(), "x", "y"); err == nil {
+		t.Error("a 404 was accepted")
 	}
 }

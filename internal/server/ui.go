@@ -27,6 +27,7 @@ type state struct {
 	DVRError   string           `json:"dvr_error,omitempty"`
 	DVRMillis  int64            `json:"dvr_ms"`
 	DVRHealth  []dvr.Health     `json:"dvr_health"`
+	DVRClient  *registration    `json:"dvr_client,omitempty"` // how the bridge is registered with the DVR
 	Activity   []string         `json:"dvr_activity"`
 	Channels   int              `json:"channels"`
 	Recs       int              `json:"recordings"`
@@ -48,7 +49,7 @@ func (s *Server) apiState(w http.ResponseWriter, r *http.Request) {
 		Name: s.cfg.Name, Version: s.cfg.Version, DVR: s.cfg.DVR.Base.String(),
 		Config: s.cfg.Settings.Get(), ConfigPath: s.cfg.ConfigPath, Saved: s.cfg.Settings.Persistent(),
 		Clients: s.clients.list(), Streams: s.jobs.list(), Defaults: config.DefaultTranscode(),
-		DVRHealth: s.cfg.DVR.Health(), UptimeSecs: int64(time.Since(s.started).Seconds()), Location: "http://" + s.hostOf(r) + "/description.xml",
+		DVRHealth: s.cfg.DVR.Health(), DVRClient: s.registration(), UptimeSecs: int64(time.Since(s.started).Seconds()), Location: "http://" + s.hostOf(r) + "/description.xml",
 	}
 	st.FFmpeg, st.FFmpegOK = s.ffmpegInfo()
 	if s.cfg.Discovery != nil {

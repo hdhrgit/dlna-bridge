@@ -134,6 +134,7 @@ function renderHealth(st) {
   $('health').replaceChildren(
     card(dvrOK, 'DVR', st.dvr_error ? st.dvr_error : st.channels + ' channels, ' + st.recordings + ' recordings',
       st.dvr + (dvrOK && st.dvr_ms ? ' · answers in ' + st.dvr_ms + ' ms' : '') +
+      (st.dvr_client ? ' · as "' + st.dvr_client.name + '" in its client list' + (st.dvr_client.error ? ' (registering fails: ' + st.dvr_client.error + ')' : st.dvr_client.id ? '' : ' (registering…)') : '') +
       failing.map(h => ' · ' + h.what + ' list is ' + (h.last_ok && h.last_ok > '2000' ? ago(h.last_ok).replace(' ago', '') + ' old' : 'missing') + ', refresh failing: ' + h.last_error).join('')),
     card(d ? d.searches > 0 : null, 'Discovery', d ? (d.searches ? d.searches + ' searches answered' : 'No TV has searched yet') : 'off',
       (d && d.last_search && d.searches ? 'last from ' + d.last_from + ', ' + ago(d.last_search) + ' · ' : '') + 'TVs find ' + st.location),

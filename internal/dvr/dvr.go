@@ -390,6 +390,39 @@ func (f *File) Open(ctx context.Context, off, n int64) (io.ReadCloser, error) {
 	return resp.Body, nil
 }
 
+// Register tells the DVR that this program is a client, called name. The DVR
+// keeps one client for each address it is reached from, and names what that
+// address watches, in its activity list and its client list, after it: without
+// this the bridge's streams are named by its address. machineID is a stable
+// identity for it. It returns the id the DVR gave the client.
+func (c *Client) Register(ctx context.Context, name, machineID string) (string, error) {
+	body, err := json.Marshal(map[string]string{"hostname": name, "machine_id": machineID})
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", c.Base.String()+"/dvr/clients/register", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	c.SetAgent(req)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("DVR /dvr/clients/register: %s", resp.Status)
+	}
+	var out struct {
+		CID string `json:"cid"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", fmt.Errorf("DVR /dvr/clients/register: %w", err)
+	}
+	return out.CID, nil
+}
+
 // SmallStreamURL asks the DVR's transcoder for a small H.264/AAC HLS stream of
 // a channel. height must be even, and bitrate is the total in kbps.
 func (c *Client) SmallStreamURL(device, number string, height, kbps int) string {

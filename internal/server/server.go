@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"dlna/internal/config"
@@ -47,6 +48,9 @@ type Config struct {
 	// PlansDir is where the cut lists of recordings are kept between runs. Empty:
 	// they are not.
 	PlansDir string
+	// ClientName is what the DVR calls this program in its client list and
+	// activity list. Empty: it is not registered, and the DVR names it by address.
+	ClientName string
 	// Logs is what the page shows of the log; Logf should write to it.
 	Logs *LogBuffer
 	// Discovery reports how discovery has gone.
@@ -64,6 +68,13 @@ type Server struct {
 	clients clientLog
 	jobs    jobs
 	notices chan struct{} // limits event notices going out at once
+
+	regMu sync.Mutex
+	reg   registration
+	// regEvery is how often the registration is renewed, and regRetry the
+	// shortest and longest wait after a failure; tests shorten them.
+	regEvery                 time.Duration
+	regRetryMin, regRetryMax time.Duration
 }
 
 func New(cfg Config) *Server {

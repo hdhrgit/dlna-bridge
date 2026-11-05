@@ -1012,3 +1012,112 @@ func TestPlanFailures(t *testing.T) {
 		t.Errorf("a timeline failure was worked out %d times and logged %d times, want once each", calls, len(logged))
 	}
 }
+
+// The bridge registers with the DVR under its client name, again after a
+// failure and every so often, and the status page says so.
+func TestKeepRegistered(t *testing.T) {
+	var mu sync.Mutex
+	var bodies []string
+	fail := 2 // the first two attempts fail
+	dvrSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/dvr/clients/register":
+			b, _ := io.ReadAll(r.Body)
+			mu.Lock()
+			bodies = append(bodies, string(b))
+			failing := fail > 0
+			fail--
+			mu.Unlock()
+			if failing {
+				http.Error(w, "busy", http.StatusServiceUnavailable)
+				return
+			}
+			io.WriteString(w, `{"cid":"cid-9"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer dvrSrv.Close()
+	c, _ := dvr.New(dvrSrv.URL)
+	b, _ := OpenBookmarks("")
+	var lmu sync.Mutex
+	var logs []string
+	srv := New(Config{Name: "TV name", UUID: "uuid-1", Version: "t", DVR: c, Settings: mustSettings(t, config.Config{}), Bookmarks: b,
+		ClientName: "DLNA Bridge", Logf: func(f string, a ...any) { lmu.Lock(); logs = append(logs, fmt.Sprintf(f, a...)); lmu.Unlock() }})
+	srv.regEvery, srv.regRetryMin, srv.regRetryMax = 80*time.Millisecond, 10*time.Millisecond, 20*time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { srv.KeepRegistered(ctx); close(done) }()
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		mu.Lock()
+		n := len(bodies)
+		mu.Unlock()
+		if n >= 5 || time.Now().After(deadline) { // 2 failures, a success, and two renewals
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	var st struct {
+		Client *registration `json:"dvr_client"`
+	}
+	resp, err := http.Get(ts.URL + "/api/state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	json.NewDecoder(resp.Body).Decode(&st)
+	resp.Body.Close()
+	cancel()
+	<-done
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) < 5 {
+		t.Fatalf("%d attempts, want at least 5", len(bodies))
+	}
+	// The DVR is told the client name, not the DLNA name, and a stable identity.
+	for _, body := range bodies {
+		if !strings.Contains(body, `"hostname":"DLNA Bridge"`) || !strings.Contains(body, `"machine_id":"uuid-1"`) {
+			t.Errorf("registration body %s", body)
+		}
+	}
+	if st.Client == nil || st.Client.Name != "DLNA Bridge" || st.Client.ID != "cid-9" || st.Client.Error != "" {
+		t.Errorf("status: %+v", st.Client)
+	}
+	// One line when it fails, one when it works, not a line for each renewal.
+	lmu.Lock()
+	defer lmu.Unlock()
+	var failed, ok int
+	for _, l := range logs {
+		if strings.HasPrefix(l, "registering with the DVR") {
+			failed++
+		}
+		if strings.HasPrefix(l, "registered with the DVR") {
+			ok++
+		}
+	}
+	if failed != 1 || ok != 1 {
+		t.Errorf("log: %d failure lines and %d success lines: %q", failed, ok, logs)
+	}
+}
+
+// With no client name the bridge does not register at all.
+func TestNoRegistrationWithoutAName(t *testing.T) {
+	hit := make(chan string, 1)
+	dvrSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit <- r.URL.Path }))
+	defer dvrSrv.Close()
+	c, _ := dvr.New(dvrSrv.URL)
+	srv := New(Config{Name: "T", UUID: "u", Version: "t", DVR: c, Settings: mustSettings(t, config.Config{})})
+	srv.KeepRegistered(context.Background()) // returns at once
+	if srv.registration() != nil {
+		t.Error("a registration is reported")
+	}
+	select {
+	case p := <-hit:
+		t.Errorf("the DVR was asked for %s", p)
+	default:
+	}
+}

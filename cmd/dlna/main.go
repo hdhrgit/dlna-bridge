@@ -44,6 +44,7 @@ func main() {
 	debug := flag.Bool("debug", envBool("DLNA_DEBUG"), "log each SOAP request and the start of its response")
 	maxStale := flag.Duration("dvr-max-stale", envDuration("DLNA_DVR_MAX_STALE", 15*time.Minute), "how old the DVR's channel and recording lists may be when it does not answer and they are served anyway")
 	userAgent := flag.String("user-agent", envOr("DLNA_USER_AGENT", ""), "what the bridge calls itself to the DVR (default: dlna-bridge/<version>)")
+	clientName := flag.String("client-name", envOr("DLNA_CLIENT_NAME", "DLNA Bridge"), "what the DVR calls the bridge in its client list and activity list, apart from the DLNA name the TVs see (empty: do not register)")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 	if *showVersion {
@@ -108,7 +109,7 @@ func main() {
 	srv := server.New(server.Config{
 		Name: *name, UUID: uuid, Version: version,
 		DVR: client, DVRPublic: *dvrPublic, Settings: settings, FFmpeg: *ffmpeg,
-		TrustedProxies: trusted, SelfURL: "http://127.0.0.1:" + portStr, PlansDir: plansDir, Debug: *debug, Bookmarks: bookmarks,
+		TrustedProxies: trusted, SelfURL: "http://127.0.0.1:" + portStr, PlansDir: plansDir, ClientName: *clientName, Debug: *debug, Bookmarks: bookmarks,
 		Logf: logs.Logf, Logs: logs, ConfigPath: *configFile,
 		Discovery: func() ssdp.Stats { return adv.Stats() },
 	})
@@ -116,6 +117,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	go srv.KeepRegistered(ctx)
 	hs := &http.Server{Addr: *listen, Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second, ConnContext: server.ConnContext}
 	go func() {
 		<-ctx.Done()

@@ -60,6 +60,7 @@ LAN address on the DVR's port. Open `http://HOST:8200/` to check the bridge reac
 | `-config` | `DLNA_CONFIG` | `config.json` in `-state` | the file the settings page writes |
 | `-dvr-max-stale` | `DLNA_DVR_MAX_STALE` | `15m` | how old the channel and recording lists may be, when the DVR does not answer, and still be served; after that the DVR's error is shown |
 | `-user-agent` | `DLNA_USER_AGENT` | `dlna-bridge/<version>` | what the bridge calls itself to the DVR, for its lists, streams and ffmpeg |
+| `-client-name` | `DLNA_CLIENT_NAME` | `DLNA Bridge` | what the DVR calls the bridge in its client list and activity list, apart from the DLNA name the TVs see; empty: do not register |
 | `-advertise` | `DLNA_ADVERTISE` | | the address to announce, when the machine has several |
 | `-advertise-port` | `DLNA_ADVERTISE_PORT` | the port of `-listen` | the port to announce, when the TVs reach the server through a proxy on another one |
 | `-trusted-proxies` | `DLNA_TRUSTED_PROXIES` | | addresses or ranges of the proxies in front of the server, whose `X-Forwarded-For` and `X-Forwarded-Host` are believed |
@@ -102,6 +103,16 @@ dlna-bridge -advertise-port 8280 -trusted-proxies 127.0.0.1      # or DLNA_ADVER
 
 The TVs speak plain http, so the proxy should not redirect to https. Streams that a client takes straight from the
 DVR (*Direct*) do not pass through the proxy; use *Through the bridge* for those that should.
+
+## How the DVR sees the bridge
+
+The DVR names a viewer by the address it connects from. Without a name, everything the bridge sends, for any TV,
+shows in the DVR's activity list as "Watching … from 192.168.1.10", the bridge's address. At start-up, and every
+half hour after, the bridge registers with the DVR (`POST /dvr/clients/register`) under `-client-name`, so the
+activity list says "from DLNA Bridge", and the DVR's client list has an entry of that name. The name is separate
+from the DLNA name (`-name`) that the TVs show. The status page says how it went. All the TVs share the one
+name, since they all reach the DVR through the bridge. A client set to *Direct* is not the bridge's: the DVR
+names it by that TV's own address.
 
 ## What the TVs see
 
