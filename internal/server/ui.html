@@ -30,6 +30,8 @@
   .dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:6px; background:var(--muted); } .dot.good { background:var(--good); } .dot.bad { background:var(--bad); }
   pre.log { margin:0; max-height:360px; overflow:auto; font:12px/1.4 ui-monospace, monospace; white-space:pre-wrap; word-break:break-all; }
   pre.log .bad { color:var(--bad); } pre.log .t { color:var(--muted); }
+  #logpanel.max { position:fixed; inset:0; z-index:10; background:var(--bg); padding:16px; display:flex; flex-direction:column; }
+  #logpanel.max .card { flex:1; display:flex; min-height:0; margin-bottom:0; } #logpanel.max pre.log { max-height:none; flex:1; }
   .ok { color:var(--good); } .err { color:var(--bad); } .tag { font-size:12px; color:var(--muted); border:1px solid var(--line); border-radius:10px; padding:0 8px; }
 </style>
 </head>
@@ -51,10 +53,13 @@
   <div class="card"><table id="seen"></table></div>
 
   <h2>Recent log</h2>
+  <div id="logpanel">
   <div class="row" style="margin-bottom:6px"><input id="logfilter" placeholder="Filter, for example an address or 'transcode'" style="max-width:340px">
     <label class="check" style="margin:0"><input type="checkbox" id="logpause">Pause</label>
-    <label class="check" style="margin:0"><input type="checkbox" id="logbad">Only problems</label></div>
+    <label class="check" style="margin:0"><input type="checkbox" id="logbad">Only problems</label>
+    <button id="logmax" title="Fill the window with the log (Esc to go back)">Maximize</button></div>
   <div class="card"><pre class="log" id="log"></pre></div>
+  </div>
 
   <h2>Default</h2>
   <p>For any client that matches none of the clients below.</p>
@@ -179,6 +184,12 @@ async function pollLog() {
   if (j.lines.length) renderLog();
 }
 $('logfilter').oninput = renderLog; $('logbad').onchange = renderLog;
+function maximizeLog(on) {
+  $('logpanel').classList.toggle('max', on); $('logmax').textContent = on ? 'Restore' : 'Maximize';
+  document.body.style.overflow = on ? 'hidden' : ''; $('log').scrollTop = $('log').scrollHeight;
+}
+$('logmax').onclick = () => maximizeLog(!$('logpanel').classList.contains('max'));
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && $('logpanel').classList.contains('max')) maximizeLog(false); });
 
 function addFrom(c) {
   cfg.clients.push({ name: 'New client', ips: [c.ip], user_agents: [], profile: JSON.parse(JSON.stringify({ ...cfg.default, transcode: cfg.default.transcode.max_width ? cfg.default.transcode : defaults })) });
