@@ -387,6 +387,11 @@ func (s *Server) recordingObject(v view, f dvr.Recording, id, parent string) obj
 	if img == "" {
 		img = f.Airing.Image
 	}
+	if img == "" {
+		// A recording without guide data has no picture, and some TVs (an LG)
+		// leave such an item out of the list: give it the bridge's icon.
+		img = "http://" + v.host + "/icons/logo120.png"
+	}
 	eid := url.PathEscape(string(f.ID))
 	bridge := "/stream/rec/" + eid
 	if cut {
