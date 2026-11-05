@@ -392,7 +392,11 @@ func (s *Server) recordingObject(v view, f dvr.Recording, id, parent string) obj
 	if cut {
 		bridge = "/stream/adfree/" + eid
 	}
-	res := s.resource(v, dvr.RecordingPath(string(f.ID)), bridge, nil, cut, recProtocol)
+	protocol := recProtocol
+	if cut && v.prof.Seek == config.SeekTime {
+		protocol = timeProtocol
+	}
+	res := s.resource(v, dvr.RecordingPath(string(f.ID)), bridge, nil, cut, protocol)
 	o := object{
 		ID: id, Parent: parent, Title: recordingTitle(f), Class: classRecorded,
 		URL: res.url, Protocol: res.protocol, Duration: f.Duration, Art: img, Description: f.Airing.Summary,

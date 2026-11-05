@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -378,5 +380,87 @@ func TestPlanJSON(t *testing.T) {
 	q.Size++
 	if q.Valid(src.Size()) {
 		t.Error("a plan with the wrong size is valid")
+	}
+}
+
+// A stream from the start is the same bytes as the planned file. From a time
+// on, it starts with the PAT and PMT and the first keyframe after that
+// time, skips a break that keyframe would fall in, and has the later breaks cut.
+func TestStream(t *testing.T) {
+	base := int64(90000)
+	src := memSource(testStream(60, base))
+	breaks := []float64{10.2, 20.5, 40, 45}
+	p, err := Make(context.Background(), src, breaks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := io.ReadAll(p.Open(context.Background(), src.open))
+	s, err := NewStream(context.Background(), src, breaks, 0, src.open, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(s)
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("stream from 0: %d bytes, %v; the file has %d", len(got), err, len(want))
+	}
+
+	firstFrame := func(b []byte) (pat bool, sec float64) {
+		pk, _ := parsePacket(b)
+		pat = pk.pid == 0
+		for i := 0; i+packetSize <= len(b); i += packetSize {
+			pk, _ := parsePacket(b[i:])
+			if pk.pid == testVideoPID && pk.pusi {
+				pts, _ := pesPTS(pk.payload)
+				return pat, float64(pts-base) / 90000
+			}
+		}
+		return pat, -1
+	}
+	for _, c := range []struct{ at, key, shift float64 }{
+		{30, 31, 10.3}, // between the breaks: the first keyframe after, with the breaks before taken off its time
+		{18, 21, 10.3}, // the keyframe after 18 s is in the first break: start after it
+	} {
+		s, err := NewStream(context.Background(), src, breaks, c.at, src.open, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := io.ReadAll(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pat, sec := firstFrame(b)
+		if !pat || math.Abs(sec-(c.key-c.shift)) > 0.01 {
+			t.Errorf("from %.0fs: PAT first %v, first frame at %.2fs, want %.2fs", c.at, pat, sec, c.key-c.shift)
+		}
+		// The break after is cut: one more PAT, where the stream picks up.
+		joins := 0
+		for i := packetSize; i+packetSize <= len(b); i += packetSize {
+			if pk, _ := parsePacket(b[i:]); pk.pid == 0 {
+				joins++
+			}
+		}
+		if joins != 1 {
+			t.Errorf("from %.0fs: %d joins, want 1", c.at, joins)
+		}
+	}
+}
+
+// A break that cannot be found mid-stream leaves the rest uncut, instead of
+// stopping the stream.
+func TestStreamRestUncut(t *testing.T) {
+	a, b := testStream(40, 90000), testStream(40, 90000+5000*90000)
+	src := memSource(append(a, b...))
+	var logged string
+	s, err := NewStream(context.Background(), src, []float64{10, 15, 50, 55}, 0, src.open, func(f string, v ...any) { logged = fmt.Sprintf(f, v...) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// All but the first break, about 5 s of 80.
+	if !strings.Contains(logged, "uncut") || len(got) < len(src)*70/80 {
+		t.Errorf("logged %q; %d of %d bytes", logged, len(got), len(src))
 	}
 }
