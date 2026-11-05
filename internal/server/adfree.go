@@ -42,7 +42,7 @@ type plans struct {
 	logf  func(format string, a ...any)
 }
 
-const planVersion = 1 // changes when plans made earlier should not be used again
+const planVersion = 2 // changes when plans made earlier should not be used again: 2, MPEG-2 cut on I pictures
 
 var (
 	maxPlans     = 32

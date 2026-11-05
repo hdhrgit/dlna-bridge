@@ -17,7 +17,7 @@ const ptsWrap = 1 << 33
 type streams struct {
 	pmtPID   int
 	videoPID int
-	hevc     bool
+	codec    byte   // the video's stream type: 0x01/0x02 MPEG-1/2, 0x1b H.264, 0x24 HEVC
 	pat, pmt []byte // the raw packets, to repeat in front of each part
 }
 
@@ -105,7 +105,7 @@ func findStreams(b []byte) (streams, error) {
 			}
 		case pk.pid == s.pmtPID && s.pmt == nil:
 			if pid, typ := pmtVideo(sec); pid >= 0 {
-				s.videoPID, s.hevc, s.pmt = pid, typ == 0x24, append([]byte(nil), raw...)
+				s.videoPID, s.codec, s.pmt = pid, typ, append([]byte(nil), raw...)
 			}
 		}
 		if s.pat != nil && s.pmt != nil {

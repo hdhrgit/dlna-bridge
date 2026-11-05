@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"testing"
@@ -220,7 +221,7 @@ func TestBreakToTheEnd(t *testing.T) {
 func TestKeyframeNALShortPacket(t *testing.T) {
 	pes := make([]byte, 184)
 	pes[8] = 200 // header length beyond the packet
-	if keyframeNAL(pes, false) || keyframeNAL(pes, true) {
+	if keyframeStart(pes, 0x1b) || keyframeStart(pes, 0x24) || keyframeStart(pes, 0x02) {
 		t.Error("found a keyframe in a header that runs past the packet")
 	}
 }
@@ -464,5 +465,59 @@ func TestDamagedRecording(t *testing.T) {
 		if n == 0 || !bytes.Equal(b[:n], all[off:off+int64(n)]) {
 			t.Errorf("seek to %d read different bytes", off)
 		}
+	}
+}
+
+// MPEG-2 has no NAL units. Its slice start codes, read as H.264, look like
+// IDRs (0x05) and SPSs (0x07); only an I picture is a keyframe.
+func TestKeyframeMPEG2(t *testing.T) {
+	pes := func(pictureType byte) []byte {
+		b := []byte{0, 0, 1, 0xe0, 0, 0, 0x80, 0x80, 5, 0x21, 0, 1, 0, 1}
+		b = append(b, 0, 0, 1, 0x00, 0x00, pictureType<<3)   // picture start: type
+		b = append(b, 0, 0, 1, 0x05, 9, 9, 0, 0, 1, 0x07, 9) // slices 5 and 7
+		return b
+	}
+	if !keyframeStart(pes(1), 0x02) {
+		t.Error("an I picture is not taken for a keyframe")
+	}
+	if keyframeStart(pes(2), 0x02) || keyframeStart(pes(3), 0x02) {
+		t.Error("a P or B picture is taken for a keyframe")
+	}
+	if !keyframeStart(pes(2), 0x1b) {
+		t.Error("the same bytes as H.264 should read as a keyframe (it shows why the codec matters)")
+	}
+}
+
+// A frame stamped far off, as damage leaves, is not taken for the frame
+// after a break: the cuts land where they would without it.
+func TestStrayTimestamp(t *testing.T) {
+	base := int64(90000)
+	clean := testStream(60, base)
+	bad := append([]byte(nil), clean...)
+	// Restamp the first frame shown at or after 20.5 s, where the first break
+	// ends, as 6 hours on.
+	for i := 0; i+packetSize <= len(bad); i += packetSize {
+		pk, _ := parsePacket(bad[i:])
+		if pk.pid != testVideoPID || !pk.pusi {
+			continue
+		}
+		if pts, ok := pesPTS(pk.payload); ok && pts-base >= 20.5*90000 {
+			p := pk.payload[9:14]
+			v := base + 6*3600*90000
+			p[0], p[1], p[2], p[3], p[4] = byte(0x21|v>>29&0x0e), byte(v>>22), byte(v>>14|1), byte(v>>7), byte(v<<1|1)
+			break
+		}
+	}
+	breaks := []float64{10.2, 20.5, 40, 45}
+	want, err := Make(context.Background(), memSource(clean), breaks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Make(context.Background(), memSource(bad), breaks)
+	if err != nil {
+		t.Fatalf("with a stray timestamp: %v", err)
+	}
+	if fmt.Sprint(got.Parts[2].Off, got.Kept) != fmt.Sprint(want.Parts[2].Off, want.Kept) {
+		t.Errorf("cuts moved: %v %v, want %v %v", got.Parts[2].Off, got.Kept, want.Parts[2].Off, want.Kept)
 	}
 }
