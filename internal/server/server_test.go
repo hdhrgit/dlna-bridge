@@ -1474,3 +1474,109 @@ func TestWatchIntervalSet(t *testing.T) {
 		t.Fatalf("watch every %s", s.watchEvery)
 	}
 }
+
+// Changes come from the DVR's event stream: a burst of file and show events
+// makes one change event to the TV, after the cached lists are dropped. When
+// the stream drops, the bridge connects again and catches up on what changed
+// meanwhile.
+func TestDVREventStream(t *testing.T) {
+	var mu sync.Mutex
+	newest := `[{"id":"5","completed":false}]`
+	files := 0
+	lines := make(chan string, 10)
+	drop := make(chan struct{})
+	d := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/all":
+			mu.Lock()
+			io.WriteString(w, newest)
+			mu.Unlock()
+		case "/dvr/files":
+			mu.Lock()
+			files++
+			mu.Unlock()
+			io.WriteString(w, `[]`)
+		case "/dvr/events/subscribe":
+			fl := w.(http.Flusher)
+			io.WriteString(w, `{"Type":"hello", "Version":"test"}`+"\n")
+			fl.Flush()
+			mu.Lock()
+			dr := drop
+			mu.Unlock()
+			for {
+				select {
+				case l := <-lines:
+					io.WriteString(w, l+"\n")
+					fl.Flush()
+				case <-dr:
+					return
+				case <-r.Context().Done():
+					return
+				}
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer d.Close()
+	events := make(chan string, 10)
+	tv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		events <- r.Header.Get("Seq")
+	}))
+	defer tv.Close()
+	c, _ := dvr.New(d.URL)
+	srv := New(Config{DVR: c, Settings: mustSettings(t, config.Config{})})
+	srv.watchEvery = 50 * time.Millisecond
+	s := httptest.NewServer(srv.Handler())
+	defer s.Close()
+	req, _ := http.NewRequest("SUBSCRIBE", s.URL+"/evt/ContentDirectory", nil)
+	req.Header.Set("Callback", "<"+tv.URL+"/evt>")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if seq := <-events; seq != "0" {
+		t.Fatalf("first SEQ %q", seq)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv.cfg.DVR.Recordings(ctx) // cached from now on
+	go srv.WatchChanges(ctx)
+	time.Sleep(100 * time.Millisecond)
+
+	lines <- `{"Type":"activities.set","Name":"x","Value":"Recording"}` // not a change
+	lines <- `{"Type":"files.updated","Name":"5"}`
+	lines <- `{"Type":"groups.updated","Name":"g"}`
+	select {
+	case seq := <-events:
+		if seq != "1" {
+			t.Errorf("SEQ %q", seq)
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("no event after files.updated")
+	}
+	select {
+	case seq := <-events:
+		t.Errorf("a second event, SEQ %s, for one burst", seq)
+	case <-time.After(500 * time.Millisecond):
+	}
+	srv.cfg.DVR.Recordings(ctx)
+	mu.Lock()
+	if files != 2 {
+		t.Errorf("recordings fetched %d times; the event should drop the cached list", files)
+	}
+	// The DVR restarts: the stream ends, and something changes meanwhile.
+	newest = `[{"id":"6","completed":false},{"id":"5","completed":true}]`
+	close(drop)
+	drop = make(chan struct{})
+	mu.Unlock()
+	select {
+	case seq := <-events:
+		if seq != "2" {
+			t.Errorf("SEQ %q after reconnecting", seq)
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("no event for the change made while the stream was down")
+	}
+}

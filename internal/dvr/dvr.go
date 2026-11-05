@@ -2,6 +2,7 @@
 package dvr
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -360,6 +361,53 @@ func (c *Client) Recording(ctx context.Context, id string) (Recording, bool, err
 	return Recording{}, false, nil
 }
 
+// ForgetRecordings drops the cached recording and show lists, so that the next
+// ask sees a change the DVR has announced.
+func (c *Client) ForgetRecordings() {
+	c.files.forget()
+	c.groups.forget()
+}
+
+// Event is one line of the DVR's event stream: files.created, files.updated,
+// files.deleted, groups.updated, activities.set, hello...
+type Event struct {
+	Type    string `json:"Type"`
+	Name    string `json:"Name"`
+	Value   string `json:"Value"`
+	Version string `json:"Version"` // in hello
+}
+
+// Events follows the DVR's event stream (/dvr/events/subscribe, one JSON
+// object a line) and hands each event to fn, until the stream or ctx ends.
+func (c *Client) Events(ctx context.Context, fn func(Event)) error {
+	req, err := http.NewRequestWithContext(ctx, "GET", c.Base.String()+"/dvr/events/subscribe", nil)
+	if err != nil {
+		return err
+	}
+	c.SetAgent(req)
+	// No client timeout: the stream stays open as long as the DVR runs.
+	resp, err := http.DefaultTransport.RoundTrip(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("DVR /dvr/events/subscribe: %s", resp.Status)
+	}
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 64<<10), 1<<20)
+	for sc.Scan() {
+		var e Event
+		if json.Unmarshal(sc.Bytes(), &e) == nil && e.Type != "" {
+			fn(e)
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return err
+	}
+	return io.EOF
+}
+
 // Newest is the DVR's latest additions, newest first: a short list, cheap to
 // ask for often, unlike /dvr/files, which holds the whole library.
 type Newest struct {
@@ -570,6 +618,14 @@ func (c *cached[T]) get(ctx context.Context, ttl, maxStale time.Duration, fetch 
 		var zero T
 		return zero, ctx.Err()
 	}
+}
+
+// forget makes the next get fetch afresh and wait for it, rather than answer
+// with what it has.
+func (c *cached[T]) forget() {
+	c.mu.Lock()
+	c.at = time.Time{}
+	c.mu.Unlock()
 }
 
 // health says when the value was last fetched and why the last refresh failed.

@@ -139,9 +139,10 @@ names it by that TV's own address.
   seek like the shows. Left out when there are none.
 * **Recording now**: what the DVR has not finished recording, from the start. Left out when nothing is.
 
-TVs keep the lists they have browsed. Every minute the bridge asks the DVR for its newest recordings (a few
-kilobytes), and when one starts, finishes or has its breaks marked, it tells the TVs that subscribed to its
-change events, so that they browse again. A TV that ignores the events shows the new recording when its folder
+TVs keep the lists they have browsed. The bridge follows the DVR's own event stream (`/dvr/events/subscribe`),
+and when a recording starts, finishes, has its breaks marked or is deleted, it tells the TVs that subscribed to
+its change events, so that they browse again. If the stream drops, as when the DVR restarts, the bridge looks at
+the DVR's newest recordings every minute until it connects again, and catches up on what changed meanwhile. A TV that ignores the events shows the new recording when its folder
 is opened again, or after its media app is restarted.
 
 ## Clients
