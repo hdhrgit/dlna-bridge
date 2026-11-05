@@ -182,7 +182,9 @@ replaced when the recording's size or marked breaks change.
 So that the first play of a new recording does not wait for that, the bridge works out its cuts as soon as the
 DVR has marked its breaks. Only new recordings: every 2 minutes it asks the DVR for its 25 newest
 (`/api/v1/all?sort=date_added&order=desc&limit=25`, a few kilobytes, not the whole library) and plans those that
-were finished and marked since the bridge started, one at a time, each a few hundred range reads. The library
+were finished and marked since the bridge started and have 6 breaks or more, one at a time, each a few hundred
+range reads. One with fewer breaks is planned in well under a second on first play, and planning ahead a
+recording that is never watched would cost the DVR the reads for nothing. The library
 already there is planned on first play, as before. It needs the state directory, and does nothing while no
 client has its commercials cut. `-plan-ahead=false` turns it off.
 

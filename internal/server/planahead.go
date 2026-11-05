@@ -12,10 +12,15 @@ import (
 const (
 	planAheadEvery = 2 * time.Minute
 	planAheadLook  = 25
+	// planAheadMin is the fewest breaks worth planning ahead. With fewer, the
+	// plan takes well under a second on first play, and planning a recording
+	// that is never watched would cost the DVR the reads for nothing.
+	planAheadMin = 6
 )
 
-// PlanAhead works out the cuts of each new recording once the DVR has marked
-// its breaks, so that the first play starts without waiting for them. Only
+// PlanAhead works out the cuts of each new recording with planAheadMin breaks
+// or more once the DVR has marked them, so that the first play starts without
+// waiting for them. Only
 // recordings that are new since the start are planned, not the library: it
 // looks at the DVR's newest few, one short request every planAheadEvery, and
 // plans one at a time. It does nothing without a plans directory, or while no
@@ -48,7 +53,7 @@ func (s *Server) planNewest(ctx context.Context, seen map[string]bool, first boo
 		return
 	}
 	for _, n := range newest {
-		if !n.Completed || !n.Processed || len(n.Commercials) < 2 {
+		if !n.Completed || !n.Processed || len(n.Commercials)/2 < planAheadMin {
 			continue
 		}
 		key := fmt.Sprint(n.ID, n.Commercials)
