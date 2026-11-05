@@ -85,6 +85,7 @@ func Make(ctx context.Context, src Source, breaks []float64) (*Plan, error) {
 	if tail := f.align(max(size-2<<20, int64(first))); tail > int64(first) {
 		if pts, at, err := f.ptsAfter(tail); err == nil {
 			f.note(f.seconds(pts), at)
+			f.end = f.seconds(pts)
 		}
 	}
 	p := &Plan{videoPID: st.videoPID}
@@ -205,6 +206,9 @@ type finder struct {
 	st    streams
 	first int64 // offset of the first packet
 	base  int64 // PTS of the first video frame
+	// end is the time of a frame near the end of the file, once known. A frame
+	// stamped well past it is damaged, not a frame of the recording.
+	end float64
 	// samples are the frames seen so far: the video at byte off is shown at
 	// time t. Both only grow along the file, which lets a search for another time
 	// start from the nearest two instead of from the whole file.
@@ -266,7 +270,7 @@ func (f *finder) ptsAfter(off int64) (int64, int64, error) {
 			next = i + packetSize
 			pk, _ := parsePacket(b[i:])
 			if pk.pid == f.st.videoPID && pk.pusi {
-				if pts, ok := pesPTS(pk.payload); ok {
+				if pts, ok := pesPTS(pk.payload); ok && !f.stray(f.seconds(pts)) {
 					return pts, off + int64(i), nil
 				}
 			}
@@ -278,6 +282,14 @@ func (f *finder) ptsAfter(off int64) (int64, int64, error) {
 	}
 	return 0, 0, errors.New("no video timestamp found")
 }
+
+// maxStray is how far past where it should be a frame's time may be before it
+// is taken for damage: a frame stamped minutes off among frames a fraction of
+// a second apart. Real jumps in the timeline are caught by maxInSlack.
+const maxStray = 60
+
+// stray says whether a frame's time is past the end of the recording.
+func (f *finder) stray(t float64) bool { return f.end > 0 && t > f.end+maxStray }
 
 // seconds is a PTS as time from the start of the recording.
 func (f *finder) seconds(pts int64) float64 {
@@ -370,9 +382,12 @@ const scanChunk = 256 << 10
 // 16 MB.
 func (f *finder) scan(off int64, t float64, keyframe bool) (int64, float64, error) {
 	off = f.align(off)
-	for end := off + 16<<20; off < end; {
+	strays := 0 // frames stamped too far past t: damage, or a jump in the timeline
+	atEnd := false
+	for end := off + 16<<20; off < end && !atEnd; {
 		if off >= f.src.Size() {
-			return 0, 0, io.EOF
+			atEnd = true
+			break
 		}
 		b, err := f.src.ReadAt(f.ctx, off, scanChunk)
 		if err != nil {
@@ -389,14 +404,24 @@ func (f *finder) scan(off int64, t float64, keyframe bool) (int64, float64, erro
 			if !ok || f.seconds(pts) < t {
 				continue
 			}
-			if !keyframe || pk.rai || keyframeNAL(pesHead(b, i, f.st.videoPID), f.st.hevc) {
+			if s := f.seconds(pts); f.stray(s) || s > t+maxStray {
+				strays++
+				continue
+			}
+			if !keyframe || pk.rai || keyframeStart(pesHead(b, i, f.st.videoPID), f.st.codec) {
 				return off + int64(i), f.seconds(pts), nil
 			}
 		}
 		if off+int64(len(b)) >= f.src.Size() {
-			return 0, 0, io.EOF
+			atEnd = true
 		}
 		off += int64(max(next, packetSize))
+	}
+	if strays > 0 {
+		return 0, 0, fmt.Errorf("after %.1fs only frames stamped far later: %w", t, ErrTimeline)
+	}
+	if atEnd {
+		return 0, 0, io.EOF
 	}
 	return 0, 0, fmt.Errorf("nothing found within 16 MB after %.1fs", t)
 }
@@ -467,10 +492,11 @@ func pesHead(b []byte, i int, pid int) []byte {
 	return head
 }
 
-// keyframeNAL looks in the first packet of a PES for an H.264 SPS or IDR, or
-// an HEVC VPS, SPS or IRAP picture. MPEG-2 streams rely on the random access
-// flag alone.
-func keyframeNAL(pes []byte, hevc bool) bool {
+// keyframeStart looks at the start of a PES for a keyframe: an H.264 SPS or
+// IDR, an HEVC VPS, SPS or IRAP picture, or an MPEG-1/2 I picture. MPEG-2 has
+// no NAL units: read as H.264, its slice start codes look like IDRs and SPSs,
+// and nearly every picture would pass for a keyframe.
+func keyframeStart(pes []byte, codec byte) bool {
 	if len(pes) < 9 || 9+int(pes[8]) > len(pes) {
 		return false // the header runs on into the next packet: leave it to the keyframe flag
 	}
@@ -481,7 +507,13 @@ func keyframeNAL(pes []byte, hevc bool) bool {
 			return false
 		}
 		h := b[i+3]
-		if hevc {
+		if codec == 0x01 || codec == 0x02 {
+			// A picture start code, then 10 bits of temporal reference and 3 of
+			// picture coding type: 1 is I.
+			if h == 0 {
+				return i+6 <= len(b) && b[i+5]>>3&7 == 1
+			}
+		} else if codec == 0x24 {
 			if t := h >> 1 & 0x3f; t == 32 || t == 33 || (t >= 16 && t <= 21) {
 				return true
 			}
