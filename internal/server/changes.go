@@ -193,16 +193,35 @@ func (s *Server) newestSig(ctx context.Context) string {
 	return b.String()
 }
 
-// guideEvery is how often WatchGuide looks at what is on now.
-const guideEvery = 5 * time.Minute
+// guideEvery is how often WatchGuide looks at what is on now, guideAfter how
+// long past each step of the clock: shows change on the hour and the half
+// hour, so 10 s past 2:00, 2:05, 2:10...
+const (
+	guideEvery = 5 * time.Minute
+	guideAfter = 10 * time.Second
+)
 
-// WatchGuide looks at the show on now on each channel every guideEvery, and
+// nextGuideLook is the next time, after now, that is guideAfter past a whole
+// multiple of every on the clock.
+func nextGuideLook(now time.Time, every time.Duration) time.Time {
+	t := now.Truncate(every).Add(guideAfter)
+	for !t.After(now) {
+		t = t.Add(every)
+	}
+	return t
+}
+
+// WatchGuide looks at the show on now on each channel every guideEvery, just
+// past each step of the clock (2:00:10, 2:05:10...), and
 // when any changed tells the subscribed TVs that the channel folders changed:
 // their items are titled with the show on now, which a TV would otherwise keep
 // showing after it ended.
 func (s *Server) WatchGuide(ctx context.Context) {
 	last := ""
 	for {
+		// Fresh, not the copy kept for browsing: one fetched before the hour
+		// knows only the shows that have just ended.
+		s.cfg.DVR.ForgetGuide()
 		if now, err := s.cfg.DVR.NowPlaying(ctx); err == nil {
 			keys := make([]string, 0, len(now))
 			for k := range now {
@@ -218,10 +237,14 @@ func (s *Server) WatchGuide(ctx context.Context) {
 			}
 			last = b.String()
 		}
+		wait := s.guideEvery // tests use a short one, off the clock
+		if wait >= time.Minute {
+			wait = time.Until(nextGuideLook(time.Now(), wait))
+		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(s.guideEvery):
+		case <-time.After(wait):
 		}
 	}
 }

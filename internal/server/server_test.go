@@ -1721,7 +1721,6 @@ func TestGuideEvents(t *testing.T) {
 	mu.Lock()
 	title = "Late Show"
 	mu.Unlock()
-	srv.cfg.DVR.ForgetGuide() // the bridge keeps it a minute
 	select {
 	case b := <-bodies:
 		if !strings.Contains(b, "<ContainerUpdateIDs>live,") || strings.Contains(b, "recent,") {
@@ -1734,5 +1733,14 @@ func TestGuideEvents(t *testing.T) {
 	case b := <-bodies:
 		t.Errorf("a second event with nothing changed: %s", b)
 	case <-time.After(150 * time.Millisecond):
+	}
+}
+
+func TestNextGuideLook(t *testing.T) {
+	at := func(s string) time.Time { v, _ := time.Parse("15:04:05", s); return v }
+	for now, want := range map[string]string{"14:00:00": "14:00:10", "14:00:10": "14:05:10", "14:03:34": "14:05:10", "14:59:59": "15:00:10"} {
+		if got := nextGuideLook(at(now), 5*time.Minute).Format("15:04:05"); got != want {
+			t.Errorf("after %s: %s, want %s", now, got, want)
+		}
 	}
 }
