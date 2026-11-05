@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DLNA bridge</title>
+<link rel="icon" type="image/png" href="icons/logo48.png">
 <style>
   :root { --bg:#fff; --fg:#1d2330; --muted:#5d6678; --line:#d9dde5; --card:#f6f7f9; --accent:#2457d6; --bad:#b3261e; --good:#1b7a3b; }
   @media (prefers-color-scheme: dark) { :root { --bg:#14171d; --fg:#e6e9ef; --muted:#9aa3b5; --line:#2c323d; --card:#1b1f27; --accent:#7aa2ff; --bad:#ff8a80; --good:#6fd28d; } }
@@ -178,7 +179,7 @@ function renderLog() {
 }
 async function pollLog() {
   if ($('logpause').checked) return;
-  const j = await (await fetch('api/log?after=' + logSeq)).json();
+  const j = await (await fetch('api/log?after=' + logSeq, { cache: 'no-store' })).json();
   if (j.last < logSeq) { logSeq = 0; logLines = []; return; } // the bridge restarted: start again
   logSeq = j.last; logLines = logLines.concat(j.lines).slice(-500);
   if (j.lines.length) renderLog();
@@ -197,7 +198,7 @@ function addFrom(c) {
 }
 
 async function load(keepEdits) {
-  const st = await (await fetch('api/state')).json();
+  const st = await (await fetch('api/state', { cache: 'no-store' })).json();
   lastState = st; defaults = st.transcode_defaults; saved = st.saved;
   $('title').textContent = st.name + ' · DLNA bridge';
   if (!keepEdits) { cfg = st.config; render(); } else renderSeen();

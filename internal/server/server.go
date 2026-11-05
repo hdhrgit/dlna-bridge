@@ -108,6 +108,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/config", s.apiSetConfig)
 	mux.HandleFunc("GET /channels.m3u", s.playlist)
 	mux.HandleFunc("GET /description.xml", s.description)
+	mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+		b, typ, _ := iconFile("logo48.png") // browsers take a PNG here
+		w.Header().Set("Content-Type", typ)
+		w.Write(b)
+	})
 	mux.HandleFunc("GET /icons/{name}", func(w http.ResponseWriter, r *http.Request) {
 		b, typ, ok := iconFile(r.PathValue("name"))
 		if !ok {
@@ -133,7 +138,7 @@ func logRequests(logf func(string, ...any), version string, who func(*http.Reque
 		w.Header().Set("Server", serverHeader(version))
 		// The settings page polls every few seconds and would drown the rest.
 		p := r.URL.Path
-		if strings.HasPrefix(p, "/ctl/") || strings.HasPrefix(p, "/api/") || strings.HasPrefix(p, "/icons/") || p == "/" {
+		if strings.HasPrefix(p, "/ctl/") || strings.HasPrefix(p, "/api/") || strings.HasPrefix(p, "/icons/") || p == "/" || p == "/favicon.ico" {
 			h.ServeHTTP(w, r)
 			return
 		}
