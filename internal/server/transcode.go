@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -12,6 +11,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -153,8 +153,8 @@ func (s *Server) runFFmpeg(w http.ResponseWriter, r *http.Request, args []string
 	cmd := exec.CommandContext(r.Context(), s.cfg.FFmpeg, args...)
 	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 	cmd.WaitDelay = 3 * time.Second
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	stderr := &tailBuffer{max: 4 << 10}
+	cmd.Stderr = stderr
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		return 0, "", err
@@ -216,6 +216,30 @@ func (s *Server) runFFmpeg(w http.ResponseWriter, r *http.Request, args []string
 		msg = msg[len(msg)-500:]
 	}
 	return sent, msg, err
+}
+
+// tailBuffer keeps the last max bytes written to it: the end of ffmpeg's error
+// output, which says why it stopped, without holding all of it.
+type tailBuffer struct {
+	mu  sync.Mutex
+	max int
+	b   []byte
+}
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.b = append(t.b, p...)
+	if len(t.b) > t.max {
+		t.b = append(t.b[:0], t.b[len(t.b)-t.max:]...)
+	}
+	return len(p), nil
+}
+
+func (t *tailBuffer) String() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return string(t.b)
 }
 
 // playlist lists every channel's stream, for players that take an M3U. The

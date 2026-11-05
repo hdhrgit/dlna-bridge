@@ -130,9 +130,11 @@ let lastState = null;
 
 function card(good, title, big, small) { return el('div', { class: 'card' }, el('b', {}, el('span', { class: 'dot ' + (good === true ? 'good' : good === false ? 'bad' : '') }), title), big, el('small', {}, small)); }
 function renderHealth(st) {
-  const d = st.discovery, dvrOK = !st.dvr_error;
+  const d = st.discovery, failing = (st.dvr_health || []).filter(h => h.last_error), dvrOK = !st.dvr_error && !failing.length;
   $('health').replaceChildren(
-    card(dvrOK, 'DVR', dvrOK ? st.channels + ' channels, ' + st.recordings + ' recordings' : st.dvr_error, st.dvr + (dvrOK && st.dvr_ms ? ' · answers in ' + st.dvr_ms + ' ms' : '')),
+    card(dvrOK, 'DVR', st.dvr_error ? st.dvr_error : st.channels + ' channels, ' + st.recordings + ' recordings',
+      st.dvr + (dvrOK && st.dvr_ms ? ' · answers in ' + st.dvr_ms + ' ms' : '') +
+      failing.map(h => ' · ' + h.what + ' list is ' + (h.last_ok && h.last_ok > '2000' ? ago(h.last_ok).replace(' ago', '') + ' old' : 'missing') + ', refresh failing: ' + h.last_error).join('')),
     card(d ? d.searches > 0 : null, 'Discovery', d ? (d.searches ? d.searches + ' searches answered' : 'No TV has searched yet') : 'off',
       (d && d.last_search && d.searches ? 'last from ' + d.last_from + ', ' + ago(d.last_search) + ' · ' : '') + 'TVs find ' + st.location),
     card(st.ffmpeg_ok, 'ffmpeg', st.ffmpeg_ok ? 'ready' : 'not working', st.ffmpeg_ok ? st.ffmpeg : st.ffmpeg + ' (only converted streams need it)'),

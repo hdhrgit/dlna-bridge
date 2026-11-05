@@ -40,6 +40,7 @@ func main() {
 	ffmpeg := flag.String("ffmpeg", envOr("DLNA_FFMPEG", "ffmpeg"), "ffmpeg for the tiny TV's streams")
 	maxTranscodes := flag.Int("max-transcodes", envInt("DLNA_MAX_TRANSCODES", 2), "first-run default: conversions at once")
 	debug := flag.Bool("debug", envBool("DLNA_DEBUG"), "log each SOAP request and the start of its response")
+	maxStale := flag.Duration("dvr-max-stale", envDuration("DLNA_DVR_MAX_STALE", 15*time.Minute), "how old the DVR's channel and recording lists may be when it does not answer and they are served anyway")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 	if *showVersion {
@@ -54,6 +55,7 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
+	client.MaxStale = *maxStale
 	bookmarks, err := server.OpenBookmarks(*state)
 	if err != nil {
 		fatal(err)
@@ -142,6 +144,13 @@ func envOr(key, def string) string {
 func envInt(key string, def int) int {
 	if v, err := strconv.Atoi(os.Getenv(key)); err == nil {
 		return v
+	}
+	return def
+}
+
+func envDuration(key string, def time.Duration) time.Duration {
+	if d, err := time.ParseDuration(os.Getenv(key)); err == nil && d > 0 {
+		return d
 	}
 	return def
 }

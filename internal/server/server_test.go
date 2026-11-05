@@ -1,9 +1,12 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +17,7 @@ import (
 	"time"
 
 	"dlna/internal/config"
+	"dlna/internal/cut"
 	"dlna/internal/dvr"
 )
 
@@ -625,5 +629,114 @@ func TestRecentRecordings(t *testing.T) {
 	_, d = browse(t, wide.URL, "recent", "BrowseDirectChildren", 0, 0)
 	if len(d.Items) != 4 || d.Items[3].ID != "recent/17" || d.Items[3].Title != "Nova - S03E04 Black Holes" && !strings.HasSuffix(d.Items[3].Title, "S03E04 Black Holes") {
 		t.Errorf("last 48 hours: %+v", d.Items)
+	}
+}
+
+func TestCallbackOnlyToTheSubscriber(t *testing.T) {
+	for _, tc := range []struct{ header, from, want string }{
+		{"<http://10.0.0.7:49152/evt>", "10.0.0.7", "http://10.0.0.7:49152/evt"},
+		{"<http://10.0.0.7/evt>", "10.0.0.7", "http://10.0.0.7/evt"},
+		{"<http://10.0.0.9:80/>", "10.0.0.7", ""},                                       // someone else
+		{"<http://169.254.169.254/latest/meta-data/>", "10.0.0.7", ""},                  // a metadata service
+		{"<http://localhost:8200/ctl/x>", "10.0.0.7", ""},                               // a name, to be looked up
+		{"<http://10.0.0.7@evil.example/>", "10.0.0.7", ""},                             // the host is evil.example
+		{"<https://10.0.0.7/evt>", "10.0.0.7", ""},                                      // not http
+		{"<http://10.0.0.7:99999/evt>", "10.0.0.7", ""},                                 // no such port
+		{"<http://10.0.0.9/a><http://10.0.0.7:5/b>", "10.0.0.7", "http://10.0.0.7:5/b"}, // the first that is theirs
+		{"<http://[fe80::1]:80/>", "fe80::1", "http://[fe80::1]:80/"},
+		{"", "10.0.0.7", ""},
+		{"<http://10.0.0.7/>", "not an address", ""},
+	} {
+		if got := callback(tc.header, tc.from); got != tc.want {
+			t.Errorf("callback(%q, %q) = %q, want %q", tc.header, tc.from, got, tc.want)
+		}
+	}
+}
+
+// A subscription naming another host gets its answer, but no request goes there,
+// and a redirect from the subscriber's own callback is not followed.
+func TestSubscribeDoesNotReachOtherHosts(t *testing.T) {
+	s := newTestServer(t, false)
+	other, err := net.Listen("tcp", "127.0.0.2:0")
+	if err != nil {
+		t.Skip("no second loopback address:", err)
+	}
+	hits := make(chan string, 4)
+	go http.Serve(other, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits <- r.Method + " " + r.URL.Path }))
+	defer other.Close()
+
+	subscribe := func(cb string) *http.Response {
+		req, _ := http.NewRequest("SUBSCRIBE", s.URL+"/evt/ContentDirectory", nil)
+		req.Header.Set("Callback", "<"+cb+">")
+		req.Header.Set("NT", "upnp:event")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp
+	}
+	if resp := subscribe("http://" + other.Addr().String() + "/evt"); resp.StatusCode != 200 {
+		t.Errorf("the subscription was refused: %d", resp.StatusCode)
+	}
+	// The subscriber's own address, which sends the notice on to the other.
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://"+other.Addr().String()+"/after-redirect", http.StatusFound)
+	}))
+	defer redirect.Close()
+	subscribe(redirect.URL + "/evt")
+	select {
+	case h := <-hits:
+		t.Errorf("a request reached the other host: %s", h)
+	case <-time.After(500 * time.Millisecond):
+	}
+}
+
+func TestPlansAreBoundedAndReplaced(t *testing.T) {
+	var p plans
+	made := 0
+	p.build = func(context.Context, cut.Source, []float64) (*cut.Plan, error) {
+		made++
+		return &cut.Plan{}, nil
+	}
+	rec := func(id string, size int64) dvr.Recording {
+		return dvr.Recording{ID: dvr.FlexString(id), FileSize: size, Commercials: []float64{1, 2}}
+	}
+	ctx := context.Background()
+	for i := 0; i < 3*maxPlans; i++ {
+		p.get(ctx, rec(itoa(int64(i)), 100), nil)
+	}
+	if len(p.m) != maxPlans || p.lru.Len() != maxPlans {
+		t.Fatalf("%d plans kept, want %d", len(p.m), maxPlans)
+	}
+	// A recent one is kept; the same recording again is not made again.
+	before := made
+	p.get(ctx, rec(itoa(3*maxPlans-1), 100), nil)
+	if made != before {
+		t.Error("a kept plan was made again")
+	}
+	// A recording whose file changed gets a new plan and does not add an entry.
+	p.get(ctx, rec(itoa(3*maxPlans-1), 200), nil)
+	if made != before+1 || len(p.m) != maxPlans {
+		t.Errorf("changed recording: made %d more, %d kept", made-before, len(p.m))
+	}
+	// A failure is not kept.
+	p.build = func(context.Context, cut.Source, []float64) (*cut.Plan, error) { return nil, errors.New("no") }
+	if _, err := p.get(ctx, rec("new", 1), nil); err == nil {
+		t.Fatal("no error")
+	}
+	if _, ok := p.m["new"]; ok {
+		t.Error("a failed plan was kept")
+	}
+}
+
+func TestTailBuffer(t *testing.T) {
+	b := &tailBuffer{max: 10}
+	for i := 0; i < 1000; i++ {
+		b.Write([]byte("0123456789"))
+	}
+	b.Write([]byte("end"))
+	if got := b.String(); got != "3456789end" || len(b.b) > 10 || cap(b.b) > 4096 {
+		t.Errorf("%q (cap %d)", got, cap(b.b))
 	}
 }

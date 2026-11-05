@@ -36,7 +36,7 @@ type Airing struct {
 	EpisodeTitle string     `json:"EpisodeTitle"`
 	Summary      string     `json:"Summary"`
 	Image        string     `json:"Image"`
-	Channel      flexString `json:"Channel"`
+	Channel      FlexString `json:"Channel"`
 	Time         int64      `json:"Time"`     // Unix seconds
 	Duration     float64    `json:"Duration"` // seconds
 	Season       int        `json:"SeasonNumber"`
@@ -46,8 +46,8 @@ type Airing struct {
 
 // Recording is one file in /dvr/files.
 type Recording struct {
-	ID           flexString `json:"ID"`
-	GroupID      flexString `json:"GroupID"`
+	ID           FlexString `json:"ID"`
+	GroupID      FlexString `json:"GroupID"`
 	Airing       Airing     `json:"Airing"`
 	Thumbnail    string     `json:"Thumbnail"`
 	Duration     float64    `json:"Duration"`     // seconds
@@ -89,30 +89,30 @@ func (r Recording) Created() time.Time {
 
 // Group is a show folder in /dvr/groups.
 type Group struct {
-	ID    flexString `json:"ID"`
+	ID    FlexString `json:"ID"`
 	Name  string     `json:"Name"`
 	Image string     `json:"Image"`
 }
 
-// flexString takes a JSON string or number, since ids are strings in some
+// FlexString takes a JSON string or number, since ids are strings in some
 // DVR versions and numbers in others.
-type flexString string
+type FlexString string
 
-func (f *flexString) UnmarshalJSON(b []byte) error {
+func (f *FlexString) UnmarshalJSON(b []byte) error {
 	b = bytes.TrimSpace(b)
 	if len(b) > 0 && b[0] == '"' {
 		var s string
 		if err := json.Unmarshal(b, &s); err != nil {
 			return err
 		}
-		*f = flexString(s)
+		*f = FlexString(s)
 		return nil
 	}
 	if string(b) == "null" {
 		*f = ""
 		return nil
 	}
-	*f = flexString(b)
+	*f = FlexString(b)
 	return nil
 }
 
@@ -121,6 +121,9 @@ func (f *flexString) UnmarshalJSON(b []byte) error {
 type Client struct {
 	Base *url.URL
 	HTTP *http.Client
+	// MaxStale is how old a list may be when the DVR does not answer and it is
+	// served anyway. Past it the DVR's error is returned.
+	MaxStale time.Duration
 
 	channels cached[[]Channel]
 	now      cached[[]nowEntry]
@@ -138,7 +141,7 @@ type activityResult struct {
 // (direct ones too), the recordings under way, and the jobs it runs. Took is how
 // long the DVR took to answer.
 func (c *Client) Activity(ctx context.Context) ([]string, time.Duration, error) {
-	r, err := c.activity.get(3*time.Second, func() (activityResult, error) {
+	r, err := c.activity.get(ctx, 3*time.Second, 10*time.Second, func(ctx context.Context) (activityResult, error) {
 		var d struct {
 			Activity map[string]string `json:"activity"`
 		}
@@ -165,7 +168,7 @@ func New(base string) (*Client, error) {
 	if u.Scheme != "http" && u.Scheme != "https" || u.Host == "" {
 		return nil, fmt.Errorf("DVR address %q is not an http:// address", base)
 	}
-	return &Client{Base: u, HTTP: &http.Client{Timeout: 15 * time.Second}}, nil
+	return &Client{Base: u, HTTP: &http.Client{Timeout: 15 * time.Second}, MaxStale: 15 * time.Minute}, nil
 }
 
 func (c *Client) getJSON(ctx context.Context, path string, v any) error {
@@ -190,7 +193,7 @@ func (c *Client) getJSON(ctx context.Context, path string, v any) error {
 // AllChannels lists the channels that are not hidden, in number order, a
 // number once for each source that carries it.
 func (c *Client) AllChannels(ctx context.Context) ([]Channel, error) {
-	return c.channels.get(time.Minute, func() ([]Channel, error) {
+	return c.channels.get(ctx, time.Minute, c.MaxStale, func(ctx context.Context) ([]Channel, error) {
 		var all []Channel
 		if err := c.getJSON(ctx, "/api/v1/channels", &all); err != nil {
 			return nil, err
@@ -250,7 +253,7 @@ type nowEntry struct {
 
 // NowPlaying maps a channel number to the title of the show on now.
 func (c *Client) NowPlaying(ctx context.Context) (map[string]string, error) {
-	entries, err := c.now.get(time.Minute, func() ([]nowEntry, error) {
+	entries, err := c.now.get(ctx, time.Minute, c.MaxStale, func(ctx context.Context) ([]nowEntry, error) {
 		var e []nowEntry
 		err := c.getJSON(ctx, "/devices/ANY/guide/now", &e)
 		return e, err
@@ -281,7 +284,7 @@ func nowTitles(entries []nowEntry, at time.Time) map[string]string {
 
 // Recordings lists the recordings that are not deleted, newest first.
 func (c *Client) Recordings(ctx context.Context) ([]Recording, error) {
-	return c.files.get(30*time.Second, func() ([]Recording, error) {
+	return c.files.get(ctx, 30*time.Second, c.MaxStale, func(ctx context.Context) ([]Recording, error) {
 		var all []Recording
 		if err := c.getJSON(ctx, "/dvr/files", &all); err != nil {
 			return nil, err
@@ -299,7 +302,7 @@ func (c *Client) Recordings(ctx context.Context) ([]Recording, error) {
 
 // Groups lists the show folders.
 func (c *Client) Groups(ctx context.Context) ([]Group, error) {
-	return c.groups.get(30*time.Second, func() ([]Group, error) {
+	return c.groups.get(ctx, 30*time.Second, c.MaxStale, func(ctx context.Context) ([]Group, error) {
 		var g []Group
 		err := c.getJSON(ctx, "/dvr/groups", &g)
 		return g, err
@@ -400,28 +403,108 @@ func numberLess(a, b string) bool {
 	return a < b
 }
 
-// cached keeps the last good value for ttl. When a refresh fails it serves the
-// stale value rather than an empty list.
+// cached keeps a value fresh for ttl. After that the next request starts one
+// refresh, and no more than one at a time however many ask. While it runs, a
+// request is served the old value, unless that is older than maxStale: then it
+// waits for the refresh and gets its error if it fails, rather than data that
+// may long have stopped being true. The lock is never held while fetching.
 type cached[T any] struct {
-	mu sync.Mutex
-	at time.Time
-	ok bool
-	v  T
+	mu   sync.Mutex
+	v    T
+	at   time.Time // when v was fetched
+	ok   bool
+	call *refresh[T]
+
+	err   error // of the last refresh that failed, until one succeeds
+	errAt time.Time
 }
 
-func (c *cached[T]) get(ttl time.Duration, fetch func() (T, error)) (T, error) {
+type refresh[T any] struct {
+	done chan struct{}
+	v    T
+	err  error
+}
+
+// refreshTimeout limits a refresh, which runs apart from the request that
+// started it.
+const refreshTimeout = 20 * time.Second
+
+func (c *cached[T]) get(ctx context.Context, ttl, maxStale time.Duration, fetch func(context.Context) (T, error)) (T, error) {
+	c.mu.Lock()
+	age := time.Since(c.at)
+	if c.ok && age < ttl {
+		v := c.v
+		c.mu.Unlock()
+		return v, nil
+	}
+	call := c.call
+	if call == nil {
+		call = &refresh[T]{done: make(chan struct{})}
+		c.call = call
+		go func() {
+			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
+			defer cancel()
+			v, err := fetch(rctx)
+			c.mu.Lock()
+			if err == nil {
+				c.v, c.at, c.ok, c.err = v, time.Now(), true, nil
+			} else {
+				c.err, c.errAt = err, time.Now()
+			}
+			c.call = nil
+			c.mu.Unlock()
+			call.v, call.err = v, err
+			close(call.done)
+		}()
+	}
+	if c.ok && age < maxStale {
+		v := c.v
+		c.mu.Unlock()
+		return v, nil
+	}
+	c.mu.Unlock()
+	select {
+	case <-call.done:
+		return call.v, call.err
+	case <-ctx.Done():
+		var zero T
+		return zero, ctx.Err()
+	}
+}
+
+// health says when the value was last fetched and why the last refresh failed.
+func (c *cached[T]) health() (at time.Time, err error, errAt time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.ok && time.Since(c.at) < ttl {
-		return c.v, nil
-	}
-	v, err := fetch()
-	if err != nil {
-		if c.ok {
-			return c.v, nil
+	return c.at, c.err, c.errAt
+}
+
+// Health is how fresh one kind of DVR data is.
+type Health struct {
+	What      string    `json:"what"`
+	LastOK    time.Time `json:"last_ok"` // zero: never fetched
+	LastError string    `json:"last_error,omitempty"`
+	ErrorAt   time.Time `json:"error_at,omitempty"`
+}
+
+// Health reports on each list the client keeps. A DVR that stops answering
+// shows here before the lists go stale enough to be dropped.
+func (c *Client) Health() []Health {
+	out := []Health{}
+	add := func(what string, at time.Time, err error, errAt time.Time) {
+		h := Health{What: what, LastOK: at}
+		if err != nil {
+			h.LastError, h.ErrorAt = err.Error(), errAt
 		}
-		return v, err
+		out = append(out, h)
 	}
-	c.v, c.at, c.ok = v, time.Now(), true
-	return v, nil
+	at, err, errAt := c.channels.health()
+	add("channels", at, err, errAt)
+	at, err, errAt = c.now.health()
+	add("guide", at, err, errAt)
+	at, err, errAt = c.files.health()
+	add("recordings", at, err, errAt)
+	at, err, errAt = c.groups.health()
+	add("shows", at, err, errAt)
+	return out
 }

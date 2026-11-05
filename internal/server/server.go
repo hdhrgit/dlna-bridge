@@ -6,7 +6,9 @@ package server
 import (
 	"bytes"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -54,6 +56,7 @@ type Server struct {
 	plans   plans
 	clients clientLog
 	jobs    jobs
+	notices chan struct{} // limits event notices going out at once
 }
 
 func New(cfg Config) *Server {
@@ -66,7 +69,7 @@ func New(cfg Config) *Server {
 	if cfg.SelfURL == "" {
 		cfg.SelfURL = "http://127.0.0.1:8200"
 	}
-	return &Server{cfg: cfg, started: time.Now(), now: time.Now}
+	return &Server{cfg: cfg, started: time.Now(), now: time.Now, notices: make(chan struct{}, 8)}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -234,8 +237,15 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Timeout", "Second-1800")
 		w.Header().Set("Server", serverHeader(s.cfg.Version))
 		w.WriteHeader(http.StatusOK)
-		if cb := callback(r.Header.Get("Callback")); !renewal && cb != "" {
-			go s.sendEvent(cb, sid, props)
+		if cb := callback(r.Header.Get("Callback"), remoteIP(r)); !renewal && cb != "" {
+			select {
+			case s.notices <- struct{}{}:
+				go func() {
+					defer func() { <-s.notices }()
+					s.sendEvent(cb, sid, props)
+				}()
+			default: // enough are going out already
+			}
 		}
 	case "UNSUBSCRIBE":
 		w.WriteHeader(http.StatusOK)
@@ -244,13 +254,30 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// callback takes the first http:// address out of a CALLBACK header.
-func callback(h string) string {
+// callback takes the first address out of a CALLBACK header, but only one that
+// is the subscriber's own: a TV's address and any port, over http. Anything else
+// would have this server send requests wherever a client names.
+func callback(h, from string) string {
+	remote := net.ParseIP(from)
+	if remote == nil {
+		return ""
+	}
 	for _, part := range strings.Split(h, ">") {
-		u := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(part), "<"))
-		if strings.HasPrefix(u, "http://") {
-			return u
+		raw := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(part), "<"))
+		u, err := url.Parse(raw)
+		if err != nil || u.Scheme != "http" || u.User != nil || u.Host == "" {
+			continue
 		}
+		ip := net.ParseIP(u.Hostname()) // a name would have to be looked up
+		if ip == nil || !ip.Equal(remote) {
+			continue
+		}
+		if p := u.Port(); p != "" {
+			if n, err := strconv.Atoi(p); err != nil || n < 1 || n > 65535 {
+				continue
+			}
+		}
+		return u.String()
 	}
 	return ""
 }
@@ -271,7 +298,11 @@ func (s *Server) sendEvent(cb, sid string, props [][2]string) {
 	req.Header.Set("Nts", "upnp:propchange")
 	req.Header.Set("Sid", sid)
 	req.Header.Set("Seq", "0")
-	c := &http.Client{Timeout: 5 * time.Second}
+	c := &http.Client{
+		Timeout: 5 * time.Second,
+		// A redirect would send the request on to wherever the subscriber likes.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 	resp, err := c.Do(req)
 	if err != nil {
 		s.cfg.Logf("event to %s: %v", cb, err)

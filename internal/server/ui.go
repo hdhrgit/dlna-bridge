@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"dlna/internal/config"
+	"dlna/internal/dvr"
 	"dlna/internal/ssdp"
 )
 
@@ -25,6 +26,7 @@ type state struct {
 	DVR        string           `json:"dvr"`
 	DVRError   string           `json:"dvr_error,omitempty"`
 	DVRMillis  int64            `json:"dvr_ms"`
+	DVRHealth  []dvr.Health     `json:"dvr_health"`
 	Activity   []string         `json:"dvr_activity"`
 	Channels   int              `json:"channels"`
 	Recs       int              `json:"recordings"`
@@ -46,7 +48,7 @@ func (s *Server) apiState(w http.ResponseWriter, r *http.Request) {
 		Name: s.cfg.Name, Version: s.cfg.Version, DVR: s.cfg.DVR.Base.String(),
 		Config: s.cfg.Settings.Get(), ConfigPath: s.cfg.ConfigPath, Saved: s.cfg.Settings.Persistent(),
 		Clients: s.clients.list(), Streams: s.jobs.list(), Defaults: config.DefaultTranscode(),
-		UptimeSecs: int64(time.Since(s.started).Seconds()), Location: "http://" + r.Host + "/description.xml",
+		DVRHealth: s.cfg.DVR.Health(), UptimeSecs: int64(time.Since(s.started).Seconds()), Location: "http://" + r.Host + "/description.xml",
 	}
 	st.FFmpeg, st.FFmpegOK = s.ffmpegInfo()
 	if s.cfg.Discovery != nil {

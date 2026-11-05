@@ -1,6 +1,7 @@
 package server
 
 import (
+	"container/list"
 	"context"
 	"fmt"
 	"net/http"
@@ -19,41 +20,68 @@ func (s *Server) adFree(f dvr.Recording) bool {
 	return f.Completed && f.Processed && f.FileSize > 0 && len(f.Commercials) >= 2
 }
 
-// plans keeps each recording's cut list, which takes a few dozen range reads
-// to work out.
+// plans keeps the cut list of the recordings played lately, which takes a few
+// dozen range reads to work out. It holds at most maxPlans, the least recently
+// used going first, and a recording's plan is dropped when its size or its
+// marked breaks change, so a library that keeps changing does not fill it.
 type plans struct {
-	mu sync.Mutex
-	m  map[string]*planEntry
+	mu  sync.Mutex
+	m   map[string]*list.Element // by recording id
+	lru *list.List               // of *planEntry, most recently used first
+	// build makes a plan; cut.Make unless a test says otherwise.
+	build func(context.Context, cut.Source, []float64) (*cut.Plan, error)
 }
 
+const maxPlans = 32
+
 type planEntry struct {
-	once sync.Once
-	plan *cut.Plan
-	err  error
+	id, key string
+	once    sync.Once
+	plan    *cut.Plan
+	err     error
 }
 
 func (p *plans) get(ctx context.Context, f dvr.Recording, file *dvr.File) (*cut.Plan, error) {
-	key := fmt.Sprintf("%s/%d/%v", f.ID, f.FileSize, f.Commercials)
+	id := string(f.ID)
+	key := fmt.Sprintf("%d/%v", f.FileSize, f.Commercials)
 	p.mu.Lock()
 	if p.m == nil {
-		p.m = map[string]*planEntry{}
+		p.m, p.lru = map[string]*list.Element{}, list.New()
 	}
-	e := p.m[key]
-	if e == nil {
-		e = &planEntry{}
-		p.m[key] = e
+	el := p.m[id]
+	if el != nil && el.Value.(*planEntry).key != key {
+		p.lru.Remove(el) // the recording is not what the plan was made for
+		el = nil
 	}
+	if el == nil {
+		el = p.lru.PushFront(&planEntry{id: id, key: key})
+		p.m[id] = el
+		for p.lru.Len() > maxPlans {
+			old := p.lru.Remove(p.lru.Back()).(*planEntry)
+			delete(p.m, old.id)
+		}
+	} else {
+		p.lru.MoveToFront(el)
+	}
+	e := el.Value.(*planEntry)
 	p.mu.Unlock()
 	e.once.Do(func() {
 		// Not the request's context: a TV that hangs up should not leave a
 		// failed plan behind for the next try.
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
 		defer cancel()
-		e.plan, e.err = cut.Make(ctx, file, f.Commercials)
+		build := p.build
+		if build == nil {
+			build = cut.Make
+		}
+		e.plan, e.err = build(ctx, file, f.Commercials)
 	})
 	if e.err != nil {
 		p.mu.Lock()
-		delete(p.m, key) // try again next time
+		if cur := p.m[id]; cur == el { // try again next time
+			p.lru.Remove(el)
+			delete(p.m, id)
+		}
 		p.mu.Unlock()
 	}
 	return e.plan, e.err

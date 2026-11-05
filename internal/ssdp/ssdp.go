@@ -40,6 +40,64 @@ type Advertiser struct {
 
 	mu    sync.Mutex
 	stats Stats
+	// replies bounds the answers going out at once; senders limits how often
+	// one address is answered.
+	replies chan struct{}
+	senders limiter
+}
+
+// Replies the server may have in flight at once, and what one address may ask:
+// a burst of searchBurst, then one search every searchEvery. A TV's search goes
+// out a few times at once, which the burst allows.
+const (
+	maxReplies  = 16
+	searchBurst = 5
+	searchEvery = 2 * time.Second
+)
+
+// limiter is a token bucket for each sender.
+type limiter struct {
+	mu sync.Mutex
+	m  map[string]*bucket
+}
+
+type bucket struct {
+	tokens float64
+	at     time.Time
+}
+
+const maxSenders = 512
+
+// allow says whether the sender may be answered now, and uses a token if so.
+func (l *limiter) allow(ip string, now time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.m == nil {
+		l.m = map[string]*bucket{}
+	}
+	b := l.m[ip]
+	if b == nil {
+		if len(l.m) >= maxSenders {
+			// Forget the senders that have been quiet long enough to be full again.
+			for k, e := range l.m {
+				if now.Sub(e.at) > searchBurst*searchEvery {
+					delete(l.m, k)
+				}
+			}
+			if len(l.m) >= maxSenders {
+				return false // a flood from many addresses
+			}
+		}
+		b = &bucket{tokens: searchBurst, at: now}
+		l.m[ip] = b
+	}
+	b.tokens = min(searchBurst, b.tokens+float64(now.Sub(b.at))/float64(searchEvery))
+	b.at = now
+	if b.tokens < 1 {
+		return false
+	}
+	b.tokens--
+	return true
 }
 
 // Stats says how discovery has gone since the start.
@@ -47,6 +105,7 @@ type Stats struct {
 	Searches   int       `json:"searches"` // searches for a media server that we answered
 	LastSearch time.Time `json:"last_search"`
 	LastFrom   string    `json:"last_from"`
+	Dropped    int       `json:"dropped"` // searches not answered, for coming too often
 	Notices    int       `json:"notices"` // alive notices sent
 	LastNotice time.Time `json:"last_notice"`
 }
@@ -59,7 +118,14 @@ func (a *Advertiser) Stats() Stats {
 
 // Run answers searches and sends alive notices until ctx ends, then says
 // byebye.
+func (a *Advertiser) dropped() {
+	a.mu.Lock()
+	a.stats.Dropped++
+	a.mu.Unlock()
+}
+
 func (a *Advertiser) Run(ctx context.Context) error {
+	a.replies = make(chan struct{}, maxReplies)
 	conn, err := net.ListenMulticastUDP("udp4", a.Iface, group)
 	if err != nil {
 		return fmt.Errorf("ssdp: %w", err)
@@ -100,11 +166,24 @@ func (a *Advertiser) Run(ctx context.Context) error {
 		if len(answers) == 0 {
 			continue
 		}
+		if !a.senders.allow(from.IP.String(), time.Now()) {
+			a.dropped()
+			continue
+		}
+		select {
+		case a.replies <- struct{}{}:
+		default:
+			a.dropped()
+			continue
+		}
 		a.mu.Lock()
 		a.stats.Searches++
 		a.stats.LastSearch, a.stats.LastFrom = time.Now(), from.IP.String()
 		a.mu.Unlock()
-		go a.reply(conn, from, answers, mx)
+		go func() {
+			defer func() { <-a.replies }()
+			a.reply(conn, from, answers, mx)
+		}()
 	}
 }
 

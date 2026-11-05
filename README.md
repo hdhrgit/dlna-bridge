@@ -58,6 +58,7 @@ LAN address on the DVR's port. Open `http://HOST:8200/` to check the bridge reac
 | `-name` | `DLNA_NAME` | `Channels DVR` | the name the TVs list |
 | `-state` | `DLNA_STATE` | `/var/lib/dlna` in Docker | where `config.json` and the Samsung resume points are kept |
 | `-config` | `DLNA_CONFIG` | `config.json` in `-state` | the file the settings page writes |
+| `-dvr-max-stale` | `DLNA_DVR_MAX_STALE` | `15m` | how old the channel and recording lists may be, when the DVR does not answer, and still be served; after that the DVR's error is shown |
 | `-advertise` | `DLNA_ADVERTISE` | | the address to announce, when the machine has several |
 | `-iface` | `DLNA_IFACE` | | the interface for discovery |
 | `-ffmpeg` | `DLNA_FFMPEG` | `ffmpeg` | |
