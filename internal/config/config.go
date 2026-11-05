@@ -27,9 +27,21 @@ const (
 	AdsKeep = "keep" // played
 )
 
+// Seeks say how a client seeks in a recording with its breaks cut.
+const (
+	// SeekBytes: the cut recording has a length and takes byte ranges, which
+	// every TV knows; the cuts are all worked out before the first byte.
+	SeekBytes = "bytes"
+	// SeekTime: the cut recording has no length and takes a time to start from
+	// (TimeSeekRange.dlna.org); it starts at once, and each cut is worked out
+	// just before playback reaches it.
+	SeekTime = "time"
+)
+
 type Profile struct {
 	Mode      string    `json:"mode"`
 	Ads       string    `json:"ads"`
+	Seek      string    `json:"seek"`
 	Transcode Transcode `json:"transcode"`
 }
 
@@ -104,6 +116,9 @@ func (c *Config) Fill() {
 		if p.Ads == "" {
 			p.Ads = AdsCut
 		}
+		if p.Seek == "" {
+			p.Seek = SeekBytes
+		}
 		if p.Transcode == (Transcode{}) {
 			p.Transcode = DefaultTranscode()
 		}
@@ -130,6 +145,11 @@ func (p Profile) validate() error {
 	case AdsCut, AdsKeep:
 	default:
 		return fmt.Errorf("ads %q is not cut or keep", p.Ads)
+	}
+	switch p.Seek {
+	case "", SeekBytes, SeekTime: // empty is bytes, from a file older than the setting
+	default:
+		return fmt.Errorf("seek %q is not bytes or time", p.Seek)
 	}
 	if p.Mode != ModeTranscode {
 		return nil

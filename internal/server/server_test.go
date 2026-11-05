@@ -1169,3 +1169,57 @@ func TestRegisterIntervalsSet(t *testing.T) {
 		t.Fatalf("intervals %s %s %s", s.regEvery, s.regRetryMin, s.regRetryMax)
 	}
 }
+
+// A client that seeks by time is told so for a cut recording (OP=10), and the
+// stream answers as one with no length: no byte ranges, the times it serves.
+func TestSeekByTime(t *testing.T) {
+	s := newServerWith(t, config.Config{Default: config.Profile{Mode: config.ModeProxy, Ads: config.AdsCut, Seek: config.SeekTime}})
+	_, d := browse(t, s.URL, "rec/18", "BrowseMetadata", 0, 0)
+	if len(d.Items) != 1 || !strings.Contains(d.Items[0].Res.Protocol, "DLNA.ORG_OP=10") || !strings.HasSuffix(d.Items[0].Res.URL, "/stream/adfree/18") {
+		t.Fatalf("item: %+v", d.Items)
+	}
+	_, d = browse(t, s.URL, "rec/19", "BrowseMetadata", 0, 0) // no breaks: byte ranges as ever
+	if len(d.Items) != 1 || !strings.Contains(d.Items[0].Res.Protocol, "DLNA.ORG_OP=01") {
+		t.Errorf("uncut item: %+v", d.Items)
+	}
+
+	do := func(method string, h map[string]string) *http.Response {
+		req, _ := http.NewRequest(method, s.URL+"/stream/adfree/18", nil)
+		for k, v := range h {
+			req.Header.Set(k, v)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp
+	}
+	resp := do("HEAD", map[string]string{"TimeSeekRange.dlna.org": "npt=0:00:15.000-"})
+	if resp.StatusCode != 200 || resp.Header.Get("Content-Length") != "" || !strings.Contains(resp.Header.Get("ContentFeatures.DLNA.ORG"), "OP=10") {
+		t.Errorf("HEAD: %d %v", resp.StatusCode, resp.Header)
+	}
+	// 60 s, with breaks at 10-20 s and from 50 s on: 40 s long.
+	if got := resp.Header.Get("TimeSeekRange.dlna.org"); got != "npt=0:00:15.000-0:00:40.000/0:00:40.000" {
+		t.Errorf("TimeSeekRange %q", got)
+	}
+	if resp := do("GET", map[string]string{"Range": "bytes=500-"}); resp.StatusCode != http.StatusNotAcceptable {
+		t.Errorf("byte range: %d", resp.StatusCode)
+	}
+	if resp := do("GET", map[string]string{"TimeSeekRange.dlna.org": "npt=41-"}); resp.StatusCode != http.StatusRequestedRangeNotSatisfiable {
+		t.Errorf("past the end: %d", resp.StatusCode)
+	}
+}
+
+func TestParseNPT(t *testing.T) {
+	for in, want := range map[string]float64{"npt=600.5-": 600.5, "npt=0:10:00.500-1:00:00": 600.5, "npt=1:00-": 60, " npt=0-": 0} {
+		if got, ok := parseNPT(in); !ok || got != want {
+			t.Errorf("%q: %v %v", in, got, ok)
+		}
+	}
+	for _, in := range []string{"", "npt=now-", "npt=-5-", "bytes=0-", "npt=1:2:3:4-"} {
+		if _, ok := parseNPT(in); ok {
+			t.Errorf("%q read", in)
+		}
+	}
+}

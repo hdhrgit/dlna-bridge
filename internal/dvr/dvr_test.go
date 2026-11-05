@@ -136,3 +136,15 @@ func TestRegister(t *testing.T) {
 		t.Error("a 404 was accepted")
 	}
 }
+
+func TestRecordingTime(t *testing.T) {
+	r := Recording{Duration: 100, Commercials: []float64{10, 20, 50, 70}}
+	for _, c := range [][2]float64{{0, 0}, {5, 5}, {10, 20}, {15, 25}, {39.5, 49.5}, {40, 70}, {45, 75}} {
+		if got := r.RecordingTime(c[0]); got != c[1] {
+			t.Errorf("RecordingTime(%v) = %v, want %v", c[0], got, c[1])
+		}
+		if back := r.AdFree(c[1]); back != c[0] {
+			t.Errorf("AdFree(%v) = %v, want %v", c[1], back, c[0])
+		}
+	}
+}
