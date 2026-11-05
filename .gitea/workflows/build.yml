@@ -1,0 +1,36 @@
+name: build
+# Builds the release files for every merge into main: archives for Linux, macOS
+# and Windows, and .deb and .rpm packages, and keeps them as the run's artifacts
+# (on the run's page, under Artifacts). No Docker.
+on:
+  push:
+    branches: [main]
+jobs:
+  binaries:
+    runs-on: ubuntu-latest
+    # Keep the version in step with go.mod.
+    container:
+      image: golang:1.25
+    steps:
+      - uses: builtin:checkout
+        with:
+          fetch-depth: 0
+      - name: version
+        id: v
+        run: echo "version=$(packaging/version.sh)" | tee -a "$GITHUB_OUTPUT"
+      - name: tools
+        env:
+          # The golang image pins its own Go, and nfpm needs a newer one.
+          GOTOOLCHAIN: auto
+        run: |
+          apt-get update -qq && apt-get install -y -qq zip nodejs >/dev/null
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.48.0
+      - name: build
+        run: PATH="$PATH:$(go env GOPATH)/bin" packaging/build.sh "${{ steps.v.outputs.version }}"
+      - name: keep
+        # v3: Gitea does not take the newer artifact protocol.
+        uses: actions/upload-artifact@v3
+        with:
+          name: dlna-bridge-${{ steps.v.outputs.version }}
+          path: dist/*
+          if-no-files-found: error
