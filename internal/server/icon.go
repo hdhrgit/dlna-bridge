@@ -7,6 +7,7 @@ import (
 	"image/jpeg"
 	"image/png"
 	"strconv"
+	"strings"
 )
 
 // icon draws a white play triangle on a blue square: the server's icon, which
@@ -33,8 +34,18 @@ func icon(size int) image.Image {
 
 var iconSizes = []int{48, 120}
 
-// iconFile makes the bytes of /icons/logo<size>.png or .jpg.
+// iconFile makes the bytes of /icons/logo<size>.png or .jpg, or of a top
+// folder's icon, /icons/folder-<id>.png.
 func iconFile(name string) ([]byte, string, bool) {
+	if id, ok := strings.CutSuffix(strings.TrimPrefix(name, "folder-"), ".png"); ok && strings.HasPrefix(name, "folder-") {
+		img, ok := folderIconImage(id, folderIconSize)
+		if !ok {
+			return nil, "", false
+		}
+		var b bytes.Buffer
+		png.Encode(&b, img)
+		return b.Bytes(), "image/png", true
+	}
 	for _, size := range iconSizes {
 		var b bytes.Buffer
 		switch name {

@@ -7,6 +7,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"image/png"
 	"io"
 	"net"
 	"net/http"
@@ -1611,5 +1612,34 @@ func TestRecordingArtFallback(t *testing.T) {
 	_, raw := soap(t, s.URL, "ContentDirectory", "Browse", "<ObjectID>rec/19</ObjectID><BrowseFlag>BrowseMetadata</BrowseFlag>")
 	if !strings.Contains(raw, "/icons/logo120.png") {
 		t.Errorf("no fallback picture in %s", raw)
+	}
+}
+
+// Every top folder has an icon of its own, served as a 160 px PNG; show and
+// source folders without a picture of their own get their folder's icon.
+func TestFolderIcons(t *testing.T) {
+	s := newTestServer(t, false)
+	_, raw := soap(t, s.URL, "ContentDirectory", "Browse", "<ObjectID>0</ObjectID><BrowseFlag>BrowseDirectChildren</BrowseFlag>")
+	for _, id := range []string{idLive, idFavorites, idRecent, idRecordings, idMovies, idRecNow, idSources} {
+		u := "/icons/folder-" + id + ".png"
+		if !strings.Contains(raw, u) {
+			t.Errorf("no icon for %s in the root listing", id)
+		}
+		resp, err := http.Get(s.URL + u)
+		if err != nil {
+			t.Fatal(err)
+		}
+		img, err := png.Decode(resp.Body)
+		resp.Body.Close()
+		if err != nil || img.Bounds().Dx() != 160 || img.Bounds().Dy() != 160 {
+			t.Errorf("%s: %v %v", u, err, img)
+		}
+	}
+	_, raw = soap(t, s.URL, "ContentDirectory", "Browse", "<ObjectID>sources</ObjectID><BrowseFlag>BrowseDirectChildren</BrowseFlag>")
+	if !strings.Contains(raw, "/icons/folder-sources.png") {
+		t.Error("source folders have no icon")
+	}
+	if resp, _ := http.Get(s.URL + "/icons/folder-nope.png"); resp.StatusCode != 404 {
+		t.Errorf("unknown folder icon: %d", resp.StatusCode)
 	}
 }
