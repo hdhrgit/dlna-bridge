@@ -7,6 +7,10 @@
 set -eu
 cd "$(dirname "$0")/.."
 export CGO_ENABLED=0
+# Exactly the Go in .go-version, whatever the machine has: a newer one is not
+# used, an older or missing one is fetched. The programs are the same everywhere.
+GOTOOLCHAIN="go$(cat .go-version)"
+export GOTOOLCHAIN
 
 # The same commit gives the same files wherever and whenever it is built. File
 # times come from the commit; times, order, owners and the locale are fixed.

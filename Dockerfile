@@ -6,7 +6,8 @@ ARG VERSION=0.99.1
 WORKDIR /src
 COPY go.mod ./
 COPY . .
-RUN export GOOS=$TARGETOS GOARCH=$TARGETARCH CGO_ENABLED=0 \
+# Exactly the Go in .go-version, as the release files are built with.
+RUN export GOOS=$TARGETOS GOARCH=$TARGETARCH CGO_ENABLED=0 GOTOOLCHAIN="go$(cat .go-version)" \
  && go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/dlna ./cmd/dlna
 
 # ffmpeg converts streams for clients set to that.

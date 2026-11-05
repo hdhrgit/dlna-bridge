@@ -175,6 +175,9 @@ recording whole.
 
 ## Develop
 
+The release files are built with exactly the Go in `.go-version`, on any machine, which is what makes the same
+commit give the same files everywhere. To move to a newer Go, change that one file.
+
 No Go is needed on the build machine; the Dockerfile builds it. With Go 1.25 or newer:
 
 ```sh
