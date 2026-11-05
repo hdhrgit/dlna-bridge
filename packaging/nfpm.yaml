@@ -33,3 +33,6 @@ suggests:
 scripts:
   postinstall: packaging/postinstall.sh
   preremove: packaging/preremove.sh
+rpm:
+  # Not the name of the machine that built it, so that any two builds match.
+  buildhost: build.invalid

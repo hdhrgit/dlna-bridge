@@ -8,6 +8,11 @@ set -eu
 cd "$(dirname "$0")/.."
 export CGO_ENABLED=0
 
+# The same commit gives the same files wherever and whenever it is built. File
+# times come from the commit; times, order, owners and the locale are fixed.
+SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct 2>/dev/null || echo 0)}
+export SOURCE_DATE_EPOCH TZ=UTC LC_ALL=C
+
 # os arch goarm  nfpm-arch (- for no package)
 targets="linux amd64 - amd64
 linux arm64 - arm64
@@ -32,10 +37,11 @@ if [ "${1:-}" = "--one" ]; then
   mkdir -p "build/$n"
   GOOS=$os GOARCH=$arch GOARM=${arm#-} go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o "$bin" ./cmd/dlna
   cp README.md "build/$n/"
+  find "build/$n" -exec touch -d "@$SOURCE_DATE_EPOCH" {} +
   if [ "$os" = windows ]; then
-    (cd build && zip -qr "../dist/$n.zip" "$n")
+    (cd build && find "$n" | sort | zip -X -q "../dist/$n.zip" -@)
   else
-    tar -C build -czf "dist/$n.tar.gz" "$n"
+    tar --sort=name --mtime="@$SOURCE_DATE_EPOCH" --owner=0 --group=0 --numeric-owner -C build -cf - "$n" | gzip -n > "dist/$n.tar.gz"
   fi
   exit 0
 fi
@@ -53,6 +59,7 @@ echo "$targets" | while read -r os arch arm pkg; do
   [ "$pkg" = "-" ] && continue
   bin=build/$(name "$os" "$arch" "$arm")/dlna-bridge
   cp "$bin" build/dlna-bridge-pkgbin
+  touch -d "@$SOURCE_DATE_EPOCH" build/dlna-bridge-pkgbin packaging/dlna-bridge.service packaging/dlna-bridge.env packaging/postinstall.sh packaging/preremove.sh
   for fmt in deb rpm; do
     VERSION=$VERSION ARCH=$pkg \
       nfpm package --config packaging/nfpm.yaml --packager $fmt --target dist/
