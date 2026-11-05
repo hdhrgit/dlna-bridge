@@ -27,6 +27,12 @@ jobs:
           go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.48.0
       - name: build
         run: PATH="$PATH:$(go env GOPATH)/bin" packaging/build.sh "${{ steps.v.outputs.version }}"
+      - name: report
+        # So that a build here and the same build elsewhere can be compared.
+        run: |
+          go version
+          sha256sum build/*/dlna-bridge build/*/dlna-bridge.exe
+          (cd dist && sha256sum *)
       - name: keep
         # v3: Gitea does not take the newer artifact protocol.
         uses: actions/upload-artifact@v3
