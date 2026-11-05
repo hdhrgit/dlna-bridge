@@ -101,15 +101,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /stream/live/{number}", s.streamLive)
 	mux.HandleFunc("GET /stream/rec/{id}", s.streamRecording)
 	mux.HandleFunc("GET /stream/adfree/{id}", s.streamAdFree)
-	return logRequests(s.cfg.Logf, s.cfg.Version, mux)
+	return logRequests(s.cfg.Logf, s.cfg.Version, s.who, mux)
 }
 
-func logRequests(logf func(string, ...any), version string, h http.Handler) http.Handler {
+func logRequests(logf func(string, ...any), version string, who func(*http.Request) string, h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Server", serverHeader(version))
 		// The settings page polls every few seconds and would drown the rest.
 		if p := r.URL.Path; !strings.HasPrefix(p, "/ctl/") && !strings.HasPrefix(p, "/api/") && !strings.HasPrefix(p, "/icons/") && p != "/" {
-			logf("http: %s %s %s from %s", r.Method, r.URL.Path, r.Header.Get("User-Agent"), r.RemoteAddr)
+			logf("http: %s %s %s from %s", r.Method, r.URL.Path, r.Header.Get("User-Agent"), who(r))
 		}
 		h.ServeHTTP(w, r)
 	})
@@ -136,16 +136,16 @@ func (s *Server) description(w http.ResponseWriter, r *http.Request) {
 func (s *Server) contentDirectory(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.Debug {
 		body, _ := io.ReadAll(io.LimitReader(r.Body, 64<<10))
-		s.cfg.Logf("debug: %s request from %s (%s): %s", r.URL.Path, r.RemoteAddr, r.Header.Get("SOAPAction"), body)
+		s.cfg.Logf("debug: %s request from %s (%s): %s", r.URL.Path, s.who(r), r.Header.Get("SOAPAction"), body)
 		r.Body = io.NopCloser(bytes.NewReader(body))
-		w = &recorder{ResponseWriter: w, logf: s.cfg.Logf, to: r.RemoteAddr}
+		w = &recorder{ResponseWriter: w, logf: s.cfg.Logf, to: s.who(r)}
 	}
 	a, err := readAction(r.Body)
 	if err != nil {
 		writeFault(w, errInvalidAction)
 		return
 	}
-	s.cfg.Logf("soap: %s %s %s from %s", a.Name, a.Args["BrowseFlag"], a.Args["ObjectID"], r.RemoteAddr)
+	s.cfg.Logf("soap: %s %s %s from %s", a.Name, a.Args["BrowseFlag"], a.Args["ObjectID"], s.who(r))
 	switch a.Name {
 	case "Browse":
 		out, err := s.browse(r.Context(), s.viewOf(r), a.Args)

@@ -223,6 +223,16 @@ func remoteIP(r *http.Request) string {
 	return host
 }
 
+// who names the requester for the log: the client's address, and after "via"
+// the proxy's when the request came through one.
+func (s *Server) who(r *http.Request) string {
+	client, remote := s.clientIP(r), remoteIP(r)
+	if client == remote {
+		return client
+	}
+	return client + " via " + remote
+}
+
 // ParseProxies reads a comma separated list of addresses and ranges.
 func ParseProxies(list string) ([]*net.IPNet, error) {
 	var out []*net.IPNet

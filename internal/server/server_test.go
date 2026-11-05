@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -832,5 +834,52 @@ func TestProfilesBehindProxy(t *testing.T) {
 		if !strings.Contains(br.Result, tc.want) {
 			t.Errorf("%s: want %q in\n%s", tc.name, tc.want, br.Result)
 		}
+	}
+}
+
+// The log names the client, not the proxy it came through.
+func TestLogNamesTheClient(t *testing.T) {
+	trusted, _ := ParseProxies("127.0.0.1")
+	var mu sync.Mutex
+	var lines []string
+	logf := func(format string, a ...any) {
+		mu.Lock()
+		lines = append(lines, fmt.Sprintf(format, a...))
+		mu.Unlock()
+	}
+	d := fakeDVR(t)
+	c, _ := dvr.New(d.URL)
+	b, _ := OpenBookmarks("")
+	srv := httptest.NewServer(New(Config{Name: "T", UUID: "u", Version: "t", DVR: c, Settings: mustSettings(t, config.Config{}), Bookmarks: b, TrustedProxies: trusted, Logf: logf}).Handler())
+	defer srv.Close()
+	get := func(forwarded string) {
+		req, _ := http.NewRequest("GET", srv.URL+"/description.xml", nil)
+		if forwarded != "" {
+			req.Header.Set("X-Forwarded-For", forwarded)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+	get("192.168.1.44")
+	get("")
+	mu.Lock()
+	defer mu.Unlock()
+	if len(lines) != 2 || !strings.HasSuffix(lines[0], "from 192.168.1.44 via 127.0.0.1") || !strings.HasSuffix(lines[1], "from 127.0.0.1") {
+		t.Errorf("log lines: %q", lines)
+	}
+	// And the SOAP lines say the same.
+	lines = nil
+	mu.Unlock()
+	body := `<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:GetSortCapabilities xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1"></u:GetSortCapabilities></s:Body></s:Envelope>`
+	req, _ := http.NewRequest("POST", srv.URL+"/ctl/ContentDirectory", strings.NewReader(body))
+	req.Header.Set("X-Forwarded-For", "192.168.1.44")
+	resp, _ := http.DefaultClient.Do(req)
+	resp.Body.Close()
+	mu.Lock()
+	if len(lines) != 1 || !strings.HasSuffix(lines[0], "from 192.168.1.44 via 127.0.0.1") {
+		t.Errorf("soap log: %q", lines)
 	}
 }
