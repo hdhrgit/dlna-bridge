@@ -89,6 +89,7 @@ func New(cfg Config) *Server {
 	}
 	s := &Server{cfg: cfg, started: time.Now(), now: time.Now, notices: make(chan struct{}, 8)}
 	s.plans.dir, s.plans.logf = cfg.PlansDir, cfg.Logf
+	s.regEvery, s.regRetryMin, s.regRetryMax = 30*time.Minute, 10*time.Second, 10*time.Minute
 	return s
 }
 
