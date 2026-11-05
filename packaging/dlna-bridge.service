@@ -1,0 +1,22 @@
+[Unit]
+Description=DLNA bridge for Channels DVR
+Documentation=https://github.com/hdhrgit/dlna-bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# DLNA_DVR and the other settings are in this file.
+EnvironmentFile=-/etc/dlna-bridge/dlna-bridge.env
+Environment=DLNA_STATE=/var/lib/dlna-bridge
+ExecStart=/usr/bin/dlna-bridge
+Restart=on-failure
+RestartSec=3
+DynamicUser=yes
+StateDirectory=dlna-bridge
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -14,6 +14,24 @@ on the settings page: see [Clients](#clients).
 
 ## Run
 
+### Packages
+
+Each release has `.deb` and `.rpm` packages for linux amd64, arm64 and armv7, and plain archives for Linux, macOS
+and Windows, on the [releases page](https://github.com/hdhrgit/dlna-bridge/releases). They hold the program, a
+systemd service and a settings file, and not ffmpeg: that is only needed by clients set to *Converted*, and is
+suggested, not required.
+
+```sh
+sudo apt install ./dlna-bridge_0.99.0_amd64.deb      # or: sudo dnf install ./dlna-bridge-0.99.0-1.x86_64.rpm
+sudoedit /etc/dlna-bridge/dlna-bridge.env             # set DLNA_DVR to the Channels DVR
+sudo systemctl enable --now dlna-bridge
+```
+
+The service keeps `config.json` in `/var/lib/dlna-bridge`. The macOS and Windows archives are built but not
+tested; run the program with `-dvr http://DVR:8089` and the flags below.
+
+### Docker
+
 A multi-platform image (linux/amd64, linux/arm64 and linux/arm/v7) is published for each release, with ffmpeg in it:
 
 ```sh

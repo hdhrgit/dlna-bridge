@@ -1,3 +1,5 @@
 /dlna
 /state/
 /docker-compose.override.yml
+/dist/
+/build/

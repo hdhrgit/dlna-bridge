@@ -1,6 +1,7 @@
 name: release
 # A pushed tag v1.2.3 publishes ghcr.io/<owner>/dlna-bridge:1.2.3 and :latest for
-# amd64, arm64 and arm/v7. Run by hand with an existing tag to publish that one.
+# amd64, arm64 and arm/v7, and attaches the binaries, .deb and .rpm packages to
+# the release. Run by hand with an existing tag to publish that one.
 on:
   push:
     tags: ["v*"]
@@ -10,7 +11,7 @@ on:
         description: Existing tag to build, such as v0.99
         required: true
 permissions:
-  contents: read
+  contents: write
   packages: write
 env:
   TAG: ${{ inputs.tag || github.ref_name }}
@@ -45,3 +46,26 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.version=${{ steps.v.outputs.version }}
             org.opencontainers.image.description=DLNA media server for Channels DVR
+
+  packages:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # A run by hand builds the packaging from the branch it was started on, so
+      # the program itself must be the tag's.
+      - name: the program is the tag's
+        run: git diff --quiet "refs/tags/$TAG" HEAD -- cmd internal go.mod go.sum
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: sudo apt-get install -y zip
+      - run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.48.0
+      - run: packaging/build.sh "$TAG"
+      - name: attach to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "${TAG#v}" --generate-notes
+          gh release upload "$TAG" dist/* --clobber

@@ -1,0 +1,35 @@
+# Built by packaging/build.sh, which sets VERSION and ARCH.
+name: dlna-bridge
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: net
+priority: optional
+maintainer: hdhrgit <4+hdhrgit@noreply.localhost>
+description: |
+  DLNA media server for Channels DVR.
+  Lists the DVR's live channels and recordings to TVs that have no Channels app,
+  cuts out commercial breaks, and converts streams for small screens.
+homepage: https://github.com/hdhrgit/dlna-bridge
+license: See the repository
+contents:
+  - src: build/dlna-bridge-pkgbin
+    dst: /usr/bin/dlna-bridge
+    file_info:
+      mode: 0755
+  - src: packaging/dlna-bridge.service
+    dst: /lib/systemd/system/dlna-bridge.service
+    file_info:
+      mode: 0644
+  - src: packaging/dlna-bridge.env
+    dst: /etc/dlna-bridge/dlna-bridge.env
+    type: config|noreplace
+    file_info:
+      mode: 0644
+# ffmpeg is only for clients set to "Converted"; the bridge runs without it, so it is
+# suggested, not recommended (apt installs recommendations by default).
+suggests:
+  - ffmpeg
+scripts:
+  postinstall: packaging/postinstall.sh
+  preremove: packaging/preremove.sh
