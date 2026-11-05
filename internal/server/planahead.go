@@ -12,11 +12,6 @@ import (
 const (
 	planAheadEvery = 2 * time.Minute
 	planAheadLook  = 25
-	// planAheadMin is the fewest breaks worth planning ahead, unless
-	// Config.PlanAheadBreaks says otherwise. With fewer, the plan takes well
-	// under a second on first play, and planning a recording that is never
-	// watched would cost the DVR the reads for nothing.
-	planAheadMin = 6
 )
 
 // PlanAhead works out the cuts of each new recording with enough breaks
@@ -24,10 +19,10 @@ const (
 // waiting for them. Only
 // recordings that are new since the start are planned, not the library: it
 // looks at the DVR's newest few, one short request every planAheadEvery, and
-// plans one at a time. It does nothing without a plans directory, or while no
-// client has its commercials cut.
+// plans one at a time. It does nothing without a plans directory, with
+// PlanAheadBreaks 0, or while no client has its commercials cut.
 func (s *Server) PlanAhead(ctx context.Context) {
-	if s.cfg.PlansDir == "" {
+	if s.cfg.PlansDir == "" || s.cfg.PlanAheadBreaks <= 0 {
 		return
 	}
 	seen := map[string]bool{}
@@ -54,7 +49,7 @@ func (s *Server) planNewest(ctx context.Context, seen map[string]bool, first boo
 		return
 	}
 	for _, n := range newest {
-		if !n.Completed || !n.Processed || len(n.Commercials)/2 < s.planAheadBreaks() {
+		if !n.Completed || !n.Processed || len(n.Commercials)/2 < s.cfg.PlanAheadBreaks {
 			continue
 		}
 		key := fmt.Sprint(n.ID, n.Commercials)
@@ -79,13 +74,6 @@ func (s *Server) planNewest(ctx context.Context, seen map[string]bool, first boo
 			return
 		}
 	}
-}
-
-func (s *Server) planAheadBreaks() int {
-	if s.cfg.PlanAheadBreaks > 0 {
-		return s.cfg.PlanAheadBreaks
-	}
-	return planAheadMin
 }
 
 // cutsAds says whether any client, or the default, has commercials cut.

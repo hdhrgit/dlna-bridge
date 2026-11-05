@@ -50,7 +50,7 @@ type Config struct {
 	// they are not.
 	PlansDir string
 	// PlanAheadBreaks is the fewest breaks a new recording must have to be
-	// planned ahead by PlanAhead. 0: planAheadMin.
+	// planned ahead by PlanAhead. 0: nothing is planned ahead.
 	PlanAheadBreaks int
 	// ClientName is what the DVR calls this program in its client list and
 	// activity list. Empty: it is not registered, and the DVR names it by address.

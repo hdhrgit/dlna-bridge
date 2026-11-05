@@ -46,7 +46,7 @@ func main() {
 	userAgent := flag.String("user-agent", envOr("DLNA_USER_AGENT", ""), "what the bridge calls itself to the DVR (default: dlna-bridge/<version>)")
 	clientName := flag.String("client-name", envOr("DLNA_CLIENT_NAME", "DLNA Bridge"), "what the DVR calls the bridge in its client list and activity list, apart from the DLNA name the TVs see (empty: do not register)")
 	planAhead := flag.Bool("plan-ahead", envOr("DLNA_PLAN_AHEAD", "true") != "false", "work out the cuts of each new recording once the DVR has marked its breaks, so its first play starts at once")
-	planAheadBreaks := flag.Int("plan-ahead-breaks", envInt("DLNA_PLAN_AHEAD_BREAKS", 6), "plan ahead only new recordings with at least this many breaks; fewer are planned on first play, in well under a second")
+	planAheadBreaks := flag.Int("plan-ahead-breaks", envInt("DLNA_PLAN_AHEAD_BREAKS", 6), "plan ahead only new recordings with at least this many breaks; fewer are planned on first play, in well under a second; 0: plan none ahead")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 	if *showVersion {

@@ -1205,7 +1205,7 @@ func TestPlanAhead(t *testing.T) {
 	defer d.Close()
 	c, _ := dvr.New(d.URL)
 	settings, _ := config.Open("", config.Config{})
-	srv := New(Config{DVR: c, Settings: settings, PlansDir: t.TempDir()})
+	srv := New(Config{DVR: c, Settings: settings, PlansDir: t.TempDir(), PlanAheadBreaks: 6})
 	var planned []string
 	srv.plans.build = func(_ context.Context, _ cut.Source, b []float64) (*cut.Plan, error) {
 		planned = append(planned, fmt.Sprint(len(b)/2))
@@ -1241,6 +1241,16 @@ func TestPlanAhead(t *testing.T) {
 	if len(planned) != 1 {
 		t.Errorf("planned %v while no client cuts", planned)
 	}
+	// A cut-off of 0 plans nothing ahead: PlanAhead returns at once.
+	off := New(Config{DVR: c, Settings: settings, PlansDir: t.TempDir()})
+	done := make(chan struct{})
+	go func() { off.PlanAhead(ctx); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Error("PlanAhead runs with a cut-off of 0")
+	}
+
 	// A lower cut-off plans the recording with few breaks too.
 	srv.cfg.Settings, srv.cfg.PlanAheadBreaks = settings, 2
 	mu.Lock()
