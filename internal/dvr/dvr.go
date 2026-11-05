@@ -348,6 +348,28 @@ func (c *Client) Recording(ctx context.Context, id string) (Recording, bool, err
 	return Recording{}, false, nil
 }
 
+// Newest is the DVR's latest additions, newest first: a short list, cheap to
+// ask for often, unlike /dvr/files, which holds the whole library.
+type Newest struct {
+	ID          string    `json:"id"`
+	Completed   bool      `json:"completed"`
+	Processed   bool      `json:"processed"`
+	Commercials []float64 `json:"commercials"`
+}
+
+func (c *Client) Newest(ctx context.Context, n int) ([]Newest, error) {
+	var out []Newest
+	err := c.getJSON(ctx, fmt.Sprintf("/api/v1/all?sort=date_added&order=desc&limit=%d", n), &out)
+	return out, err
+}
+
+// RecordingByID asks the DVR for one recording, not from the cached list.
+func (c *Client) RecordingByID(ctx context.Context, id string) (Recording, error) {
+	var r Recording
+	err := c.getJSON(ctx, "/dvr/files/"+url.PathEscape(id), &r)
+	return r, err
+}
+
 // File reads byte ranges of one recording.
 type File struct {
 	c    *Client

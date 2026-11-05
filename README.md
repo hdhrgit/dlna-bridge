@@ -66,6 +66,7 @@ LAN address on the DVR's port. Open `http://HOST:8200/` to check the bridge reac
 | `-advertise-port` | `DLNA_ADVERTISE_PORT` | the port of `-listen` | the port to announce, when the TVs reach the server through a proxy on another one |
 | `-trusted-proxies` | `DLNA_TRUSTED_PROXIES` | | addresses or ranges of the proxies in front of the server, whose `X-Forwarded-For` and `X-Forwarded-Host` are believed |
 | `-iface` | `DLNA_IFACE` | | the interface for discovery |
+| `-plan-ahead` | `DLNA_PLAN_AHEAD` | `true` | work out the cuts of each new recording once the DVR has marked its breaks (see [Commercials](#commercials)) |
 | `-ffmpeg` | `DLNA_FFMPEG` | `ffmpeg` | |
 | `-streams`, `-keep-ads`, `-max-transcodes` | `DLNA_STREAMS`, `DLNA_KEEP_ADS`, `DLNA_MAX_TRANSCODES` | | the first-run default profile, until the settings page saves a file |
 
@@ -170,6 +171,13 @@ two for a movie with 17 breaks): the search for each mark starts from the frames
 estimates where the time is from the bitrate, instead of halving the file. The cut list is kept in memory for the
 32 recordings played last and in `plans` in the state directory, so a restart does not work it out again; it is
 replaced when the recording's size or marked breaks change.
+
+So that the first play of a new recording does not wait for that, the bridge works out its cuts as soon as the
+DVR has marked its breaks. Only new recordings: every 2 minutes it asks the DVR for its 25 newest
+(`/api/v1/all?sort=date_added&order=desc&limit=25`, a few kilobytes, not the whole library) and plans those that
+were finished and marked since the bridge started, one at a time, each a few hundred range reads. The library
+already there is planned on first play, as before. It needs the state directory, and does nothing while no
+client has its commercials cut. `-plan-ahead=false` turns it off.
 
 If the recording's video timestamps jump (a splice, an encoder restart), they no longer keep time with the DVR's
 marks, and cutting by them would remove the wrong stretches. The bridge notices, logs it once, and serves that

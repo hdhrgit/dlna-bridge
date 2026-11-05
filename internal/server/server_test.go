@@ -1168,4 +1168,70 @@ func TestRegisterIntervalsSet(t *testing.T) {
 	if s.regEvery < time.Minute || s.regRetryMin < time.Second || s.regRetryMax < s.regRetryMin {
 		t.Fatalf("intervals %s %s %s", s.regEvery, s.regRetryMin, s.regRetryMax)
 	}
+	if s.planEvery < time.Minute {
+		t.Fatalf("plan ahead every %s", s.planEvery)
+	}
+}
+
+// Plan ahead leaves the recordings there at the start, plans one that is
+// finished and marked later, once, and asks only for the newest and for that
+// one recording, never for the whole library.
+func TestPlanAhead(t *testing.T) {
+	var mu sync.Mutex
+	newest := `[{"id":"5","completed":true,"processed":true,"commercials":[1,2]}]`
+	var paths []string
+	d := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		paths = append(paths, r.URL.Path)
+		switch r.URL.Path {
+		case "/api/v1/all":
+			if r.URL.Query().Get("limit") == "" {
+				t.Errorf("newest without a limit: %s", r.URL)
+			}
+			io.WriteString(w, newest)
+		case "/dvr/files/6":
+			io.WriteString(w, `{"ID":"6","Airing":{"Title":"Nova"},"Completed":true,"Processed":true,"FileSize":1000,"Commercials":[10,20]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer d.Close()
+	c, _ := dvr.New(d.URL)
+	settings, _ := config.Open("", config.Config{})
+	srv := New(Config{DVR: c, Settings: settings, PlansDir: t.TempDir()})
+	var planned []string
+	srv.plans.build = func(_ context.Context, _ cut.Source, b []float64) (*cut.Plan, error) {
+		planned = append(planned, fmt.Sprint(b))
+		return &cut.Plan{}, nil
+	}
+	seen := map[string]bool{}
+	ctx := context.Background()
+	srv.planNewest(ctx, seen, true)
+	mu.Lock()
+	newest = `[{"id":"6","completed":true,"processed":true,"commercials":[10,20]},
+		{"id":"7","completed":true,"processed":false},
+		{"id":"5","completed":true,"processed":true,"commercials":[1,2]}]`
+	mu.Unlock()
+	srv.planNewest(ctx, seen, false)
+	srv.planNewest(ctx, seen, false)
+	if len(planned) != 1 || planned[0] != "[10 20]" {
+		t.Errorf("planned %v, want recording 6 once", planned)
+	}
+	for _, p := range paths {
+		if p == "/dvr/files" {
+			t.Errorf("asked for the whole library: %v", paths)
+		}
+	}
+
+	// With every client playing the commercials, nothing is planned.
+	keep, _ := config.Open("", config.Config{Default: config.Profile{Ads: config.AdsKeep}})
+	srv.cfg.Settings = keep
+	mu.Lock()
+	newest = `[{"id":"6","completed":true,"processed":true,"commercials":[10,30]}]`
+	mu.Unlock()
+	srv.planNewest(ctx, seen, false)
+	if len(planned) != 1 {
+		t.Errorf("planned %v while no client cuts", planned)
+	}
 }
