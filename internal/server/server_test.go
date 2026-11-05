@@ -484,12 +484,12 @@ func TestHeadOnStreams(t *testing.T) {
 // 4:3 of the picture stretched to exactly its size.
 func TestFFmpegArgs(t *testing.T) {
 	tc := config.DefaultTranscode()
-	args := strings.Join(ffmpegArgs(tc, "in", false), " ")
+	args := strings.Join(ffmpegArgs(tc, "in", false, ""), " ")
 	if !strings.Contains(args, `-vf fps=min(source_fps\,24),scale=240:240:force_original_aspect_ratio=decrease,`) || strings.Contains(args, "x264-params") {
 		t.Errorf("default: %s", args)
 	}
 	tc.MaxHeight, tc.ExactSize, tc.Crop, tc.SingleSlice = 192, true, "4:3", true
-	args = strings.Join(ffmpegArgs(tc, "in", false), " ")
+	args = strings.Join(ffmpegArgs(tc, "in", false, ""), " ")
 	for _, want := range []string{
 		`-vf fps=min(source_fps\,24),crop=min(iw\,ih*4/3):min(ih\,iw*3/4),scale=240:192,setsar=1,format=yuv420p `,
 		"-tune zerolatency -x264-params sliced-threads=0:slices=1 -g 48 ",
@@ -498,7 +498,7 @@ func TestFFmpegArgs(t *testing.T) {
 			t.Errorf("board: no %q in %s", want, args)
 		}
 	}
-	if args := strings.Join(ffmpegArgs(tc, "in", true), " "); !strings.Contains(args, "-live_start_index -1 -i in ") {
+	if args := strings.Join(ffmpegArgs(tc, "in", true, ""), " "); !strings.Contains(args, "-live_start_index -1 -i in ") {
 		t.Errorf("live HLS: %s", args)
 	}
 }
@@ -881,5 +881,53 @@ func TestLogNamesTheClient(t *testing.T) {
 	mu.Lock()
 	if len(lines) != 1 || !strings.HasSuffix(lines[0], "from 192.168.1.44 via 127.0.0.1") {
 		t.Errorf("soap log: %q", lines)
+	}
+}
+
+// Everything sent to the DVR says what it is, not Go's default; so does the
+// command line given to ffmpeg for a stream it reads from the DVR.
+func TestUserAgentToTheDVR(t *testing.T) {
+	var mu sync.Mutex
+	seen := map[string]string{}
+	dvrSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen[r.URL.Path] = r.Header.Get("User-Agent")
+		mu.Unlock()
+		switch r.URL.Path {
+		case "/api/v1/channels":
+			io.WriteString(w, `[{"id":"a","name":"A","number":"5"}]`)
+		case "/devices/ANY/channels/5/stream.mpg":
+			io.WriteString(w, "ts")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer dvrSrv.Close()
+	c, _ := dvr.New(dvrSrv.URL)
+	c.UserAgent = "dlna-bridge/9.9"
+	b, _ := OpenBookmarks("")
+	start := config.Config{Default: config.Profile{Mode: config.ModeProxy, Ads: config.AdsCut}}
+	bridge := httptest.NewServer(New(Config{Name: "T", UUID: "u", Version: "9.9", DVR: c, Settings: mustSettings(t, start), Bookmarks: b}).Handler())
+	defer bridge.Close()
+
+	browse(t, bridge.URL, "live", "BrowseDirectChildren", 0, 0) // lists the channels
+	resp, err := http.Get(bridge.URL + "/stream/live/5")        // a stream passed through
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	f := c.File(dvr.Recording{ID: "7", FileSize: 10})
+	f.ReadAt(context.Background(), 0, 2) // a range of a recording, for the ad cutting; the DVR has no such file, which does not matter here
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, path := range []string{"/api/v1/channels", "/devices/ANY/channels/5/stream.mpg", "/dvr/files/7/stream.mpg"} {
+		if got := seen[path]; got != "dlna-bridge/9.9" {
+			t.Errorf("%s asked as %q", path, got)
+		}
+	}
+	if args := strings.Join(ffmpegArgs(config.DefaultTranscode(), "http://dvr/x", false, "dlna-bridge/9.9"), " "); !strings.Contains(args, "-user_agent dlna-bridge/9.9 -i http://dvr/x") {
+		t.Errorf("ffmpeg: %s", args)
 	}
 }

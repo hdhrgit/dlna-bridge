@@ -43,6 +43,7 @@ func main() {
 	maxTranscodes := flag.Int("max-transcodes", envInt("DLNA_MAX_TRANSCODES", 2), "first-run default: conversions at once")
 	debug := flag.Bool("debug", envBool("DLNA_DEBUG"), "log each SOAP request and the start of its response")
 	maxStale := flag.Duration("dvr-max-stale", envDuration("DLNA_DVR_MAX_STALE", 15*time.Minute), "how old the DVR's channel and recording lists may be when it does not answer and they are served anyway")
+	userAgent := flag.String("user-agent", envOr("DLNA_USER_AGENT", ""), "what the bridge calls itself to the DVR (default: dlna-bridge/<version>)")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 	if *showVersion {
@@ -58,6 +59,10 @@ func main() {
 		fatal(err)
 	}
 	client.MaxStale = *maxStale
+	client.UserAgent = "dlna-bridge/" + version
+	if *userAgent != "" {
+		client.UserAgent = *userAgent
+	}
 	bookmarks, err := server.OpenBookmarks(*state)
 	if err != nil {
 		fatal(err)

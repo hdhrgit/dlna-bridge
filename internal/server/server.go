@@ -297,6 +297,7 @@ func (s *Server) sendEvent(cb, sid string, props [][2]string) {
 	if err != nil {
 		return
 	}
+	req.Header.Set("User-Agent", s.agent())
 	req.Header.Set("Content-Type", `text/xml; charset="utf-8"`)
 	req.Header.Set("Nt", "upnp:event")
 	req.Header.Set("Nts", "upnp:propchange")

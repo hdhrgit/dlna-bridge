@@ -124,6 +124,9 @@ type Client struct {
 	// MaxStale is how old a list may be when the DVR does not answer and it is
 	// served anyway. Past it the DVR's error is returned.
 	MaxStale time.Duration
+	// UserAgent names this program to the DVR, in place of Go's own
+	// "Go-http-client/1.1".
+	UserAgent string
 
 	channels cached[[]Channel]
 	now      cached[[]nowEntry]
@@ -168,7 +171,14 @@ func New(base string) (*Client, error) {
 	if u.Scheme != "http" && u.Scheme != "https" || u.Host == "" {
 		return nil, fmt.Errorf("DVR address %q is not an http:// address", base)
 	}
-	return &Client{Base: u, HTTP: &http.Client{Timeout: 15 * time.Second}, MaxStale: 15 * time.Minute}, nil
+	return &Client{Base: u, HTTP: &http.Client{Timeout: 15 * time.Second}, MaxStale: 15 * time.Minute, UserAgent: "dlna-bridge"}, nil
+}
+
+// SetAgent marks a request to the DVR as this program's.
+func (c *Client) SetAgent(req *http.Request) {
+	if c.UserAgent != "" {
+		req.Header.Set("User-Agent", c.UserAgent)
+	}
 }
 
 func (c *Client) getJSON(ctx context.Context, path string, v any) error {
@@ -176,6 +186,7 @@ func (c *Client) getJSON(ctx context.Context, path string, v any) error {
 	if err != nil {
 		return err
 	}
+	c.SetAgent(req)
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return err
@@ -365,6 +376,7 @@ func (f *File) Open(ctx context.Context, off, n int64) (io.ReadCloser, error) {
 	if err != nil {
 		return nil, err
 	}
+	f.c.SetAgent(req)
 	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", off, off+n-1))
 	// No client timeout: the body may be a long stretch of a recording.
 	resp, err := http.DefaultTransport.RoundTrip(req)

@@ -19,6 +19,14 @@ import (
 	"dlna/internal/cut"
 )
 
+// agent is what this server calls itself to the DVR.
+func (s *Server) agent() string {
+	if s.cfg.DVR == nil {
+		return ""
+	}
+	return s.cfg.DVR.UserAgent
+}
+
 // evenCeil rounds up to an even number: the DVR's encoder refuses odd heights.
 func evenCeil(n int) int { return n + n%2 }
 
@@ -40,7 +48,8 @@ func videoFilter(t config.Transcode) string {
 
 // ffmpegArgs converts input to an MPEG-TS on stdout as the settings say. For
 // the DVR's live HLS it starts at the newest segment rather than three back.
-func ffmpegArgs(t config.Transcode, input string, liveHLS bool) []string {
+// userAgent, if there is one, is what ffmpeg calls itself to the server it reads.
+func ffmpegArgs(t config.Transcode, input string, liveHLS bool, userAgent string) []string {
 	kbps := func(n int) string { return strconv.Itoa(n) + "k" }
 	x264 := []string{}
 	if t.SingleSlice {
@@ -48,6 +57,9 @@ func ffmpegArgs(t config.Transcode, input string, liveHLS bool) []string {
 		x264 = []string{"-x264-params", "sliced-threads=0:slices=1"}
 	}
 	args := []string{"-hide_banner", "-loglevel", "error", "-nostdin"}
+	if userAgent != "" {
+		args = append(args, "-user_agent", userAgent)
+	}
 	if liveHLS {
 		args = append(args, "-live_start_index", "-1")
 	}
@@ -92,7 +104,7 @@ func (s *Server) transcode(w http.ResponseWriter, r *http.Request, t config.Tran
 
 	started := time.Now()
 	s.cfg.Logf("transcode: %s to %s (%s)", what, ip, client)
-	args := ffmpegArgs(t, input, live && strings.Contains(input, ".m3u8"))
+	args := ffmpegArgs(t, input, live && strings.Contains(input, ".m3u8"), s.agent())
 	if live {
 		setSendBuffer(r, liveSendBuffer)
 	}

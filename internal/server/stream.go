@@ -75,6 +75,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, dvrPath, features
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	s.cfg.DVR.SetAgent(req)
 	if rg != "" {
 		req.Header.Set("Range", rg)
 	}
