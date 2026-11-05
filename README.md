@@ -90,8 +90,8 @@ server {
         proxy_set_header X-Forwarded-Host $http_host;
         proxy_buffering off;                                       # streams must not wait in a buffer
         proxy_request_buffering off;
-        proxy_read_timeout 1h;                                     # a stream runs as long as the TV watches
-        proxy_send_timeout 1h;
+        proxy_read_timeout 1h;                                     # waiting for the bridge: a stalled channel, or a TV paused with a full buffer
+        send_timeout 1h;                                           # sending to the TV: it may stay paused for a long time
     }
 }
 ```
