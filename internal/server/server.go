@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"dlna/internal/config"
@@ -79,8 +80,15 @@ type Server struct {
 	// shortest and longest wait after a failure; tests shorten them.
 	regEvery                 time.Duration
 	regRetryMin, regRetryMax time.Duration
-	// planEvery is how often PlanAhead looks for new recordings.
-	planEvery time.Duration
+	// planEvery is how often PlanAhead looks for new recordings, and
+	// watchEvery how often WatchChanges looks for changed ones.
+	planEvery, watchEvery time.Duration
+
+	// subs are the TVs subscribed to ContentDirectory events; updateID is
+	// the SystemUpdateID, which goes up when the recordings change.
+	subsMu   sync.Mutex
+	subs     map[string]*subscription
+	updateID atomic.Int64
 }
 
 func New(cfg Config) *Server {
@@ -96,6 +104,10 @@ func New(cfg Config) *Server {
 	s := &Server{cfg: cfg, started: time.Now(), now: time.Now, notices: make(chan struct{}, 8)}
 	s.plans.dir, s.plans.logf = cfg.PlansDir, cfg.Logf
 	s.regEvery, s.regRetryMin, s.regRetryMax = 30*time.Minute, 10*time.Second, 10*time.Minute
+	s.watchEvery = watchEvery
+	// Minutes since 1970 (mod a million): higher than before a restart, as a
+	// TV that remembers it expects.
+	s.updateID.Store(time.Now().Unix() / 60 % 1000000)
 	s.planEvery = planAheadEvery
 	return s
 }
@@ -254,7 +266,7 @@ func (s *Server) contentDirectory(w http.ResponseWriter, r *http.Request) {
 	case "GetSortCapabilities":
 		writeResponse(w, cdService, a.Name, [][2]string{{"SortCaps", ""}})
 	case "GetSystemUpdateID":
-		writeResponse(w, cdService, a.Name, [][2]string{{"Id", updateID()}})
+		writeResponse(w, cdService, a.Name, [][2]string{{"Id", s.systemUpdateID()}})
 	case "X_GetFeatureList":
 		writeResponse(w, cdService, a.Name, [][2]string{{"FeatureList", featureList}})
 	case "X_SetBookmark":
@@ -282,7 +294,7 @@ const featureList = `<?xml version="1.0" encoding="UTF-8"?><Features xmlns="urn:
 
 // The tree never changes shape, so the update id only says "the lists may be
 // new": it moves on once a minute.
-func updateID() string { return strconv.FormatInt(time.Now().Unix()/60%1000000, 10) }
+func (s *Server) systemUpdateID() string { return strconv.FormatInt(s.updateID.Load(), 10) }
 
 // --- ConnectionManager
 
@@ -318,7 +330,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	var props [][2]string
 	switch service {
 	case "ContentDirectory":
-		props = [][2]string{{"SystemUpdateID", updateID()}, {"ContainerUpdateIDs", ""}}
+		props = [][2]string{{"SystemUpdateID", s.systemUpdateID()}, {"ContainerUpdateIDs", ""}}
 	case "ConnectionManager":
 		props = [][2]string{{"SourceProtocolInfo", sourceProtocols}, {"SinkProtocolInfo", ""}, {"CurrentConnectionIDs", "0"}}
 	default:
@@ -329,24 +341,28 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	case "SUBSCRIBE":
 		sid := r.Header.Get("Sid")
 		renewal := sid != ""
-		if !renewal {
+		cb := callback(r.Header.Get("Callback"), s.clientIP(r))
+		if renewal {
+			if service == "ContentDirectory" && !s.renew(sid) {
+				// Not one of ours, as after a restart: the TV subscribes anew.
+				http.Error(w, "no such subscription", http.StatusPreconditionFailed)
+				return
+			}
+		} else {
 			sid = "uuid:" + newUUID()
+			if service == "ContentDirectory" && cb != "" {
+				s.subscribe(sid, cb)
+			}
 		}
 		w.Header().Set("Sid", sid)
 		w.Header().Set("Timeout", "Second-1800")
 		w.Header().Set("Server", serverHeader(s.cfg.Version))
 		w.WriteHeader(http.StatusOK)
-		if cb := callback(r.Header.Get("Callback"), s.clientIP(r)); !renewal && cb != "" {
-			select {
-			case s.notices <- struct{}{}:
-				go func() {
-					defer func() { <-s.notices }()
-					s.sendEvent(cb, sid, props)
-				}()
-			default: // enough are going out already
-			}
+		if !renewal && cb != "" {
+			s.notify(cb, sid, 0, props)
 		}
 	case "UNSUBSCRIBE":
+		s.unsubscribe(r.Header.Get("Sid"))
 		w.WriteHeader(http.StatusOK)
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -381,7 +397,19 @@ func callback(h, from string) string {
 	return ""
 }
 
-func (s *Server) sendEvent(cb, sid string, props [][2]string) {
+// notify sends an event in the background, unless enough are going out.
+func (s *Server) notify(cb, sid string, seq int64, props [][2]string) {
+	select {
+	case s.notices <- struct{}{}:
+		go func() {
+			defer func() { <-s.notices }()
+			s.sendEvent(cb, sid, seq, props)
+		}()
+	default: // enough are going out already
+	}
+}
+
+func (s *Server) sendEvent(cb, sid string, seq int64, props [][2]string) {
 	var b strings.Builder
 	b.WriteString(`<?xml version="1.0" encoding="utf-8"?><e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0">`)
 	for _, p := range props {
@@ -397,7 +425,7 @@ func (s *Server) sendEvent(cb, sid string, props [][2]string) {
 	req.Header.Set("Nt", "upnp:event")
 	req.Header.Set("Nts", "upnp:propchange")
 	req.Header.Set("Sid", sid)
-	req.Header.Set("Seq", "0")
+	req.Header.Set("Seq", strconv.FormatInt(seq, 10))
 	c := &http.Client{
 		Timeout: 5 * time.Second,
 		// A redirect would send the request on to wherever the subscriber likes.

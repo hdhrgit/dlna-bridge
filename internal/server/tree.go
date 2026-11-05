@@ -65,7 +65,7 @@ func (s *Server) browse(ctx context.Context, v view, args map[string]string) ([]
 		{"Result", didl(objs)},
 		{"NumberReturned", strconv.Itoa(len(objs))},
 		{"TotalMatches", strconv.Itoa(total)},
-		{"UpdateID", updateID()},
+		{"UpdateID", s.systemUpdateID()},
 	}, nil
 }
 

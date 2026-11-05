@@ -1385,3 +1385,198 @@ func TestNoStoreAndFavicon(t *testing.T) {
 		t.Errorf("favicon: %d %s %d bytes", resp.StatusCode, resp.Header.Get("Content-Type"), len(b))
 	}
 }
+
+// A TV subscribed to ContentDirectory events is told when the DVR's newest
+// recordings change, with a higher SystemUpdateID and the next SEQ; a renewal
+// of an unknown subscription is refused so the TV subscribes anew; after
+// UNSUBSCRIBE no more events come.
+func TestChangeEvents(t *testing.T) {
+	var mu sync.Mutex
+	newest := `[{"id":"5","completed":false}]`
+	d := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.URL.Path == "/api/v1/all" {
+			io.WriteString(w, newest)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer d.Close()
+	type event struct{ seq, body string }
+	events := make(chan event, 10)
+	tv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		events <- event{r.Header.Get("Seq"), string(b)}
+	}))
+	defer tv.Close()
+	c, _ := dvr.New(d.URL)
+	srv := New(Config{DVR: c, Settings: mustSettings(t, config.Config{})})
+	srv.watchEvery = 20 * time.Millisecond
+	s := httptest.NewServer(srv.Handler())
+	defer s.Close()
+	sub := func(h map[string]string) *http.Response {
+		req, _ := http.NewRequest("SUBSCRIBE", s.URL+"/evt/ContentDirectory", nil)
+		for k, v := range h {
+			req.Header.Set(k, v)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp
+	}
+	resp := sub(map[string]string{"Callback": "<" + tv.URL + "/evt>", "Nt": "upnp:event"})
+	sid := resp.Header.Get("Sid")
+	first := <-events
+	if first.seq != "0" {
+		t.Fatalf("first event SEQ %q", first.seq)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go srv.WatchChanges(ctx)
+	time.Sleep(60 * time.Millisecond) // the first look only notes what is there
+	mu.Lock()
+	newest = `[{"id":"5","completed":true}]`
+	mu.Unlock()
+	select {
+	case e := <-events:
+		if e.seq != "1" || !strings.Contains(e.body, "<ContainerUpdateIDs>0,") || e.body == first.body {
+			t.Errorf("change event: %+v", e)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no event after the recording finished")
+	}
+	if resp := sub(map[string]string{"Sid": "uuid:unknown"}); resp.StatusCode != http.StatusPreconditionFailed {
+		t.Errorf("renewing an unknown subscription: %d", resp.StatusCode)
+	}
+	if resp := sub(map[string]string{"Sid": sid}); resp.StatusCode != 200 {
+		t.Errorf("renewing: %d", resp.StatusCode)
+	}
+	req, _ := http.NewRequest("UNSUBSCRIBE", s.URL+"/evt/ContentDirectory", nil)
+	req.Header.Set("Sid", sid)
+	if resp, err := http.DefaultClient.Do(req); err == nil {
+		resp.Body.Close()
+	}
+	mu.Lock()
+	newest = `[{"id":"6","completed":false},{"id":"5","completed":true}]`
+	mu.Unlock()
+	select {
+	case e := <-events:
+		t.Errorf("event after UNSUBSCRIBE: %+v", e)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+func TestWatchIntervalSet(t *testing.T) {
+	if s := New(Config{}); s.watchEvery < 30*time.Second {
+		t.Fatalf("watch every %s", s.watchEvery)
+	}
+}
+
+// Changes come from the DVR's event stream: a burst of file and show events
+// makes one change event to the TV, after the cached lists are dropped. When
+// the stream drops, the bridge connects again and catches up on what changed
+// meanwhile.
+func TestDVREventStream(t *testing.T) {
+	var mu sync.Mutex
+	newest := `[{"id":"5","completed":false}]`
+	files := 0
+	lines := make(chan string, 10)
+	drop := make(chan struct{})
+	d := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/all":
+			mu.Lock()
+			io.WriteString(w, newest)
+			mu.Unlock()
+		case "/dvr/files":
+			mu.Lock()
+			files++
+			mu.Unlock()
+			io.WriteString(w, `[]`)
+		case "/dvr/events/subscribe":
+			fl := w.(http.Flusher)
+			io.WriteString(w, `{"Type":"hello", "Version":"test"}`+"\n")
+			fl.Flush()
+			mu.Lock()
+			dr := drop
+			mu.Unlock()
+			for {
+				select {
+				case l := <-lines:
+					io.WriteString(w, l+"\n")
+					fl.Flush()
+				case <-dr:
+					return
+				case <-r.Context().Done():
+					return
+				}
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer d.Close()
+	events := make(chan string, 10)
+	tv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		events <- r.Header.Get("Seq")
+	}))
+	defer tv.Close()
+	c, _ := dvr.New(d.URL)
+	srv := New(Config{DVR: c, Settings: mustSettings(t, config.Config{})})
+	srv.watchEvery = 50 * time.Millisecond
+	s := httptest.NewServer(srv.Handler())
+	defer s.Close()
+	req, _ := http.NewRequest("SUBSCRIBE", s.URL+"/evt/ContentDirectory", nil)
+	req.Header.Set("Callback", "<"+tv.URL+"/evt>")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if seq := <-events; seq != "0" {
+		t.Fatalf("first SEQ %q", seq)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv.cfg.DVR.Recordings(ctx) // cached from now on
+	go srv.WatchChanges(ctx)
+	time.Sleep(100 * time.Millisecond)
+
+	lines <- `{"Type":"activities.set","Name":"x","Value":"Recording"}` // not a change
+	lines <- `{"Type":"files.updated","Name":"5"}`
+	lines <- `{"Type":"groups.updated","Name":"g"}`
+	select {
+	case seq := <-events:
+		if seq != "1" {
+			t.Errorf("SEQ %q", seq)
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("no event after files.updated")
+	}
+	select {
+	case seq := <-events:
+		t.Errorf("a second event, SEQ %s, for one burst", seq)
+	case <-time.After(500 * time.Millisecond):
+	}
+	srv.cfg.DVR.Recordings(ctx)
+	mu.Lock()
+	if files != 2 {
+		t.Errorf("recordings fetched %d times; the event should drop the cached list", files)
+	}
+	// The DVR restarts: the stream ends, and something changes meanwhile.
+	newest = `[{"id":"6","completed":false},{"id":"5","completed":true}]`
+	close(drop)
+	drop = make(chan struct{})
+	mu.Unlock()
+	select {
+	case seq := <-events:
+		if seq != "2" {
+			t.Errorf("SEQ %q after reconnecting", seq)
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("no event for the change made while the stream was down")
+	}
+}
