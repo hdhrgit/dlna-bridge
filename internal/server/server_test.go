@@ -740,3 +740,97 @@ func TestTailBuffer(t *testing.T) {
 		t.Errorf("%q (cap %d)", got, cap(b.b))
 	}
 }
+
+func TestClientIPAndHostBehindProxy(t *testing.T) {
+	trusted, err := ParseProxies("127.0.0.0/8, 10.0.0.2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New(Config{Settings: mustSettings(t, config.Config{}), TrustedProxies: trusted})
+	req := func(remote, xff, real, host string) *http.Request {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.RemoteAddr = remote
+		r.Host = "bridge:8200"
+		if xff != "" {
+			r.Header.Set("X-Forwarded-For", xff)
+		}
+		if real != "" {
+			r.Header.Set("X-Real-IP", real)
+		}
+		if host != "" {
+			r.Header.Set("X-Forwarded-Host", host)
+		}
+		return r
+	}
+	for _, tc := range []struct {
+		name string
+		r    *http.Request
+		ip   string
+		host string
+	}{
+		{"direct, headers ignored", req("192.168.1.50:4000", "9.9.9.9", "8.8.8.8", "evil.example"), "192.168.1.50", "bridge:8200"},
+		{"a proxy, one hop", req("127.0.0.1:4000", "192.168.1.50", "", "tv.lan:8080"), "192.168.1.50", "tv.lan:8080"},
+		{"two proxies", req("127.0.0.1:4000", "192.168.1.50, 10.0.0.2", "", ""), "192.168.1.50", "bridge:8200"},
+		{"a client's own claim is not believed", req("127.0.0.1:4000", "6.6.6.6, 192.168.1.50", "", ""), "192.168.1.50", "bridge:8200"},
+		{"real ip when there is no chain", req("127.0.0.1:4000", "", "192.168.1.51", ""), "192.168.1.51", "bridge:8200"},
+		{"junk in the chain", req("127.0.0.1:4000", "not-an-ip", "", ""), "127.0.0.1", "bridge:8200"},
+	} {
+		if got := s.clientIP(tc.r); got != tc.ip {
+			t.Errorf("%s: client %q, want %q", tc.name, got, tc.ip)
+		}
+		if got := s.hostOf(tc.r); got != tc.host {
+			t.Errorf("%s: host %q, want %q", tc.name, got, tc.host)
+		}
+	}
+	if _, err := ParseProxies("10.0.0"); err == nil {
+		t.Error("a bad proxy address was accepted")
+	}
+}
+
+func mustSettings(t *testing.T, c config.Config) *config.Store {
+	st, err := config.Open("", c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
+// Through a trusted proxy a TV is matched by its own address and sent URLs on
+// the host the proxy was asked for; from anywhere else the headers do nothing.
+func TestProfilesBehindProxy(t *testing.T) {
+	d := fakeDVR(t)
+	c, _ := dvr.New(strings.Replace(d.URL, "127.0.0.1", "localhost", 1))
+	b, _ := OpenBookmarks("")
+	start := config.Config{
+		Default: config.Profile{Mode: config.ModeDirect, Ads: config.AdsCut},
+		Clients: []config.Client{{Name: "Tiny", IPs: []string{"192.168.1.77"}, Profile: config.Profile{Mode: config.ModeProxy, Ads: config.AdsCut}}},
+	}
+	trusted, _ := ParseProxies("127.0.0.1")
+	for _, tc := range []struct {
+		name    string
+		trusted []*net.IPNet
+		want    string // the first channel's URL
+	}{
+		{"trusted", trusted, "http://tv.lan:8080/stream/live/4.1?profile=Tiny"},
+		{"not trusted", nil, "/devices/ANY/channels/4.1/stream.mpg"},
+	} {
+		srv := New(Config{Name: "T", UUID: "u", Version: "t", DVR: c, Settings: mustSettings(t, start), Bookmarks: b, TrustedProxies: tc.trusted})
+		ts := httptest.NewServer(srv.Handler())
+		body := `<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:Browse xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1"><ObjectID>live</ObjectID><BrowseFlag>BrowseDirectChildren</BrowseFlag><Filter>*</Filter><StartingIndex>0</StartingIndex><RequestedCount>1</RequestedCount><SortCriteria></SortCriteria></u:Browse></s:Body></s:Envelope>`
+		req, _ := http.NewRequest("POST", ts.URL+"/ctl/ContentDirectory", strings.NewReader(body))
+		req.Header.Set("X-Forwarded-For", "192.168.1.77")
+		req.Header.Set("X-Forwarded-Host", "tv.lan:8080")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		ts.Close()
+		var br browseResult
+		xml.Unmarshal(out, &br)
+		if !strings.Contains(br.Result, tc.want) {
+			t.Errorf("%s: want %q in\n%s", tc.name, tc.want, br.Result)
+		}
+	}
+}

@@ -80,10 +80,7 @@ func (s *Server) transcode(w http.ResponseWriter, r *http.Request, t config.Tran
 	if r.Method == http.MethodHead {
 		return
 	}
-	ip, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		ip = r.RemoteAddr
-	}
+	ip := s.clientIP(r)
 	limit := s.cfg.Settings.MaxTranscodes()
 	id, ok := s.jobs.start(limit, client, ip, r.Header.Get("User-Agent"), what)
 	if !ok {
@@ -258,7 +255,7 @@ func (s *Server) playlist(w http.ResponseWriter, r *http.Request) {
 	b.WriteString("#EXTM3U\n")
 	for _, ch := range chs {
 		name := strings.NewReplacer("\n", " ", ",", " ").Replace(ch.Name)
-		fmt.Fprintf(&b, "#EXTINF:-1 tvg-chno=%q tvg-logo=%q,%s\nhttp://%s/stream/live/%s%s\n", ch.Number, ch.Logo, name, r.Host, url.PathEscape(ch.Number), suffix)
+		fmt.Fprintf(&b, "#EXTINF:-1 tvg-chno=%q tvg-logo=%q,%s\nhttp://%s/stream/live/%s%s\n", ch.Number, ch.Logo, name, s.hostOf(r), url.PathEscape(ch.Number), suffix)
 	}
 	w.Header().Set("Content-Type", "audio/x-mpegurl; charset=utf-8")
 	w.Write([]byte(b.String()))

@@ -32,6 +32,8 @@ func main() {
 	dvrPublic := flag.String("dvr-public", envOr("DLNA_DVR_PUBLIC", ""), "the DVR's address as the TVs reach it (default: -dvr, with localhost swapped for this machine's address)")
 	name := flag.String("name", envOr("DLNA_NAME", "Channels DVR"), "name the TVs show")
 	advertise := flag.String("advertise", envOr("DLNA_ADVERTISE", ""), "address to announce to the TVs (default: the one facing each TV)")
+	advertisePort := flag.Int("advertise-port", envInt("DLNA_ADVERTISE_PORT", 0), "port to announce to the TVs, when they reach the server through a proxy on another one (default: the port of -listen)")
+	proxies := flag.String("trusted-proxies", envOr("DLNA_TRUSTED_PROXIES", ""), "addresses or ranges of the proxies in front of this server, whose X-Forwarded-For and X-Forwarded-Host are believed")
 	iface := flag.String("iface", envOr("DLNA_IFACE", ""), "network interface for discovery (default: the system's)")
 	streams := flag.String("streams", envOr("DLNA_STREAMS", "direct"), "first-run default for clients: direct (play from the DVR) or proxy (through this server)")
 	configFile := flag.String("config", envOr("DLNA_CONFIG", ""), "settings file the web page writes (default: config.json in -state)")
@@ -77,6 +79,13 @@ func main() {
 		fatal(fmt.Errorf("-listen: %w", err))
 	}
 	port, _ := strconv.Atoi(portStr)
+	if *advertisePort != 0 {
+		port = *advertisePort
+	}
+	trusted, err := server.ParseProxies(*proxies)
+	if err != nil {
+		fatal(fmt.Errorf("-trusted-proxies: %w", err))
+	}
 	var ifi *net.Interface
 	if *iface != "" {
 		if ifi, err = net.InterfaceByName(*iface); err != nil {
@@ -90,7 +99,7 @@ func main() {
 	srv := server.New(server.Config{
 		Name: *name, UUID: uuid, Version: version,
 		DVR: client, DVRPublic: *dvrPublic, Settings: settings, FFmpeg: *ffmpeg,
-		SelfURL: "http://127.0.0.1:" + portStr, Debug: *debug, Bookmarks: bookmarks,
+		TrustedProxies: trusted, SelfURL: "http://127.0.0.1:" + portStr, Debug: *debug, Bookmarks: bookmarks,
 		Logf: logs.Logf, Logs: logs, ConfigPath: *configFile,
 		Discovery: func() ssdp.Stats { return adv.Stats() },
 	})

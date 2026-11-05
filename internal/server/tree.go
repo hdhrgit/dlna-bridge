@@ -25,7 +25,7 @@ type view struct {
 
 func (s *Server) viewOf(r *http.Request) view {
 	name, prof := s.profileFor(r)
-	return view{host: r.Host, name: name, prof: prof}
+	return view{host: s.hostOf(r), name: name, prof: prof}
 }
 
 func (s *Server) browse(ctx context.Context, v view, args map[string]string) ([][2]string, error) {

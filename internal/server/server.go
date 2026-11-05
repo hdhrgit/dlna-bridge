@@ -40,6 +40,10 @@ type Config struct {
 	// Debug logs each SOAP request and the start of its response.
 	Debug bool
 	Logf  func(format string, a ...any)
+	// TrustedProxies are the proxies whose X-Forwarded-For and X-Forwarded-Host
+	// are believed. Empty: no headers are, and the connection's address is the
+	// client's.
+	TrustedProxies []*net.IPNet
 	// Logs is what the page shows of the log; Logf should write to it.
 	Logs *LogBuffer
 	// Discovery reports how discovery has gone.
@@ -237,7 +241,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Timeout", "Second-1800")
 		w.Header().Set("Server", serverHeader(s.cfg.Version))
 		w.WriteHeader(http.StatusOK)
-		if cb := callback(r.Header.Get("Callback"), remoteIP(r)); !renewal && cb != "" {
+		if cb := callback(r.Header.Get("Callback"), s.clientIP(r)); !renewal && cb != "" {
 			select {
 			case s.notices <- struct{}{}:
 				go func() {

@@ -1,9 +1,11 @@
 package server
 
 import (
+	"fmt"
 	"net"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -14,10 +16,7 @@ import (
 // profileFor finds how to serve the request's client. ?profile=<client name>
 // picks one by name, for devices that cannot be told apart by address.
 func (s *Server) profileFor(r *http.Request) (string, config.Profile) {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
+	host := s.clientIP(r)
 	ua := r.Header.Get("User-Agent")
 	name, prof := s.cfg.Settings.Match(net.ParseIP(host), ua, r.URL.Query().Get("profile"))
 	s.clients.note(host, ua, name)
@@ -208,7 +207,7 @@ func (c *countWriter) FlushError() error { return http.NewResponseController(c.R
 // tracked lists a stream passed through while it runs, with the bytes sent.
 // Requests for headers, and the bridge's own reads, are not listed.
 func (s *Server) tracked(w http.ResponseWriter, r *http.Request, kind, client, what string) (http.ResponseWriter, func()) {
-	ip := remoteIP(r)
+	ip := s.clientIP(r)
 	if r.Method == http.MethodHead || ip == "127.0.0.1" || ip == "::1" {
 		return w, func() {}
 	}
@@ -222,6 +221,80 @@ func remoteIP(r *http.Request) string {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+// ParseProxies reads a comma separated list of addresses and ranges.
+func ParseProxies(list string) ([]*net.IPNet, error) {
+	var out []*net.IPNet
+	for _, f := range strings.Split(list, ",") {
+		f = strings.TrimSpace(f)
+		if f == "" {
+			continue
+		}
+		if !strings.Contains(f, "/") {
+			ip := net.ParseIP(f)
+			if ip == nil {
+				return nil, fmt.Errorf("%q is not an address or range", f)
+			}
+			bits := 128
+			if ip.To4() != nil {
+				ip, bits = ip.To4(), 32
+			}
+			out = append(out, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
+			continue
+		}
+		_, n, err := net.ParseCIDR(f)
+		if err != nil {
+			return nil, fmt.Errorf("%q is not an address or range", f)
+		}
+		out = append(out, n)
+	}
+	return out, nil
+}
+
+func (s *Server) trusted(ip net.IP) bool {
+	for _, n := range s.cfg.TrustedProxies {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// clientIP is the address of the device making the request. Behind a proxy
+// listed in TrustedProxies it is the nearest address in X-Forwarded-For that is
+// not itself a trusted proxy, or X-Real-IP; from anyone else the headers are
+// ignored, since anyone could send them.
+func (s *Server) clientIP(r *http.Request) string {
+	remote := remoteIP(r)
+	if !s.trusted(net.ParseIP(remote)) {
+		return remote
+	}
+	hops := strings.Split(strings.Join(r.Header.Values("X-Forwarded-For"), ","), ",")
+	for i := len(hops) - 1; i >= 0; i-- {
+		ip := net.ParseIP(strings.TrimSpace(hops[i]))
+		if ip == nil {
+			break // not an address: take nothing from the header
+		}
+		if !s.trusted(ip) {
+			return ip.String()
+		}
+	}
+	if ip := net.ParseIP(strings.TrimSpace(r.Header.Get("X-Real-IP"))); ip != nil {
+		return ip.String()
+	}
+	return remote
+}
+
+// hostOf is the host and port the client used to reach the server: the Host
+// header, or what a trusted proxy says it was asked for.
+func (s *Server) hostOf(r *http.Request) string {
+	if s.trusted(net.ParseIP(remoteIP(r))) {
+		if h, _, _ := strings.Cut(r.Header.Get("X-Forwarded-Host"), ","); strings.TrimSpace(h) != "" {
+			return strings.TrimSpace(h)
+		}
+	}
+	return r.Host
 }
 
 // whatLive names a channel for the page.

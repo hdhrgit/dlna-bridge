@@ -60,12 +60,47 @@ LAN address on the DVR's port. Open `http://HOST:8200/` to check the bridge reac
 | `-config` | `DLNA_CONFIG` | `config.json` in `-state` | the file the settings page writes |
 | `-dvr-max-stale` | `DLNA_DVR_MAX_STALE` | `15m` | how old the channel and recording lists may be, when the DVR does not answer, and still be served; after that the DVR's error is shown |
 | `-advertise` | `DLNA_ADVERTISE` | | the address to announce, when the machine has several |
+| `-advertise-port` | `DLNA_ADVERTISE_PORT` | the port of `-listen` | the port to announce, when the TVs reach the server through a proxy on another one |
+| `-trusted-proxies` | `DLNA_TRUSTED_PROXIES` | | addresses or ranges of the proxies in front of the server, whose `X-Forwarded-For` and `X-Forwarded-Host` are believed |
 | `-iface` | `DLNA_IFACE` | | the interface for discovery |
 | `-ffmpeg` | `DLNA_FFMPEG` | `ffmpeg` | |
 | `-streams`, `-keep-ads`, `-max-transcodes` | `DLNA_STREAMS`, `DLNA_KEEP_ADS`, `DLNA_MAX_TRANSCODES` | | the first-run default profile, until the settings page saves a file |
 
 The server's id comes from the host name, `-name` and `-dvr`, so it stays the same across restarts and TVs do
 not list it twice.
+
+## Behind a reverse proxy
+
+TVs find the server by multicast, which stays on the machine the bridge runs on, but they can be sent to a
+proxy in front of it: announce the proxy's port with `-advertise-port` (and the address with `-advertise` if the
+bridge's machine is not the proxy's), and list the proxy in `-trusted-proxies` so that the bridge still sees each
+TV's own address, which clients (see below) match on. Without that, every request would seem to come from the
+proxy.
+
+```nginx
+server {
+    listen 8280;
+    location / {
+        proxy_pass http://127.0.0.1:8200;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $http_host;                          # the links the bridge hands out are on this host
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Host $http_host;
+        proxy_buffering off;                                       # streams must not wait in a buffer
+        proxy_request_buffering off;
+        proxy_read_timeout 1h;                                     # a stream runs as long as the TV watches
+        proxy_send_timeout 1h;
+    }
+}
+```
+
+```sh
+dlna-bridge -advertise-port 8280 -trusted-proxies 127.0.0.1      # or DLNA_ADVERTISE_PORT and DLNA_TRUSTED_PROXIES
+```
+
+The TVs speak plain http, so the proxy should not redirect to https. Streams that a client takes straight from the
+DVR (*Direct*) do not pass through the proxy; use *Through the bridge* for those that should.
 
 ## What the TVs see
 

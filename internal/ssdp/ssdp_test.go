@@ -71,3 +71,11 @@ func TestLimiterFlood(t *testing.T) {
 		t.Error("not answered once the quiet senders could be forgotten")
 	}
 }
+
+// Behind a proxy the announced address is the proxy's, on its port.
+func TestAnnouncedLocation(t *testing.T) {
+	a := &Advertiser{UUID: "abc", Port: 8080, Host: "192.168.1.10"}
+	if got := a.location(group); got != "http://192.168.1.10:8080/description.xml" {
+		t.Errorf("location %q", got)
+	}
+}
