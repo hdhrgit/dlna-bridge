@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -136,14 +137,21 @@ type Client struct {
 }
 
 type activityResult struct {
-	Items []string
+	Items []ActivityItem
 	Took  time.Duration
+}
+
+// ActivityItem is one thing the DVR says it is doing, and the address of the
+// client it does it for, when it names one ("6-file-57285-10.0.0.7").
+type ActivityItem struct {
+	Text string `json:"text"`
+	IP   string `json:"ip,omitempty"`
 }
 
 // Activity lists what the DVR says it is doing: the streams being watched
 // (direct ones too), the recordings under way, and the jobs it runs. Took is how
 // long the DVR took to answer.
-func (c *Client) Activity(ctx context.Context) ([]string, time.Duration, error) {
+func (c *Client) Activity(ctx context.Context) ([]ActivityItem, time.Duration, error) {
 	r, err := c.activity.get(ctx, 3*time.Second, 10*time.Second, func(ctx context.Context) (activityResult, error) {
 		var d struct {
 			Activity map[string]string `json:"activity"`
@@ -153,11 +161,15 @@ func (c *Client) Activity(ctx context.Context) ([]string, time.Duration, error) 
 			return activityResult{}, err
 		}
 		took := time.Since(start)
-		items := make([]string, 0, len(d.Activity))
-		for _, v := range d.Activity {
-			items = append(items, v)
+		items := make([]ActivityItem, 0, len(d.Activity))
+		for k, v := range d.Activity {
+			it := ActivityItem{Text: v}
+			if i := strings.LastIndexByte(k, '-'); i >= 0 && net.ParseIP(k[i+1:]) != nil {
+				it.IP = k[i+1:]
+			}
+			items = append(items, it)
 		}
-		sort.Strings(items)
+		sort.Slice(items, func(i, j int) bool { return items[i].Text < items[j].Text })
 		return activityResult{items, took}, nil
 	})
 	return r.Items, r.Took, err
@@ -443,6 +455,27 @@ func (c *Client) Register(ctx context.Context, name, machineID string) (string, 
 		return "", fmt.Errorf("DVR /dvr/clients/register: %w", err)
 	}
 	return out.CID, nil
+}
+
+// ClientEntry is one client in the DVR's client list.
+type ClientEntry struct {
+	ID       string `json:"id"`
+	Hostname string `json:"hostname"`
+	LocalIP  string `json:"local_ip"`
+}
+
+// ClientInfo looks a client up in the DVR's client list by its id.
+func (c *Client) ClientInfo(ctx context.Context, id string) (ClientEntry, bool, error) {
+	var all []ClientEntry
+	if err := c.getJSON(ctx, "/dvr/clients/info", &all); err != nil {
+		return ClientEntry{}, false, err
+	}
+	for _, e := range all {
+		if e.ID == id {
+			return e, true, nil
+		}
+	}
+	return ClientEntry{}, false, nil
 }
 
 // SmallStreamURL asks the DVR's transcoder for a small H.264/AAC HLS stream of

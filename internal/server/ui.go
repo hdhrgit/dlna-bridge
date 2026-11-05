@@ -21,27 +21,30 @@ func (s *Server) ui(w http.ResponseWriter, r *http.Request) {
 }
 
 type state struct {
-	Name       string           `json:"name"`
-	Version    string           `json:"version"`
-	DVR        string           `json:"dvr"`
-	DVRError   string           `json:"dvr_error,omitempty"`
-	DVRMillis  int64            `json:"dvr_ms"`
-	DVRHealth  []dvr.Health     `json:"dvr_health"`
-	DVRClient  *registration    `json:"dvr_client,omitempty"` // how the bridge is registered with the DVR
-	Activity   []string         `json:"dvr_activity"`
-	Channels   int              `json:"channels"`
-	Recs       int              `json:"recordings"`
-	Config     config.Config    `json:"config"`
-	ConfigPath string           `json:"config_path"`
-	Saved      bool             `json:"saved"` // the config is kept in a file
-	Clients    []seenClient     `json:"clients"`
-	Streams    []jobView        `json:"streams"`
-	Defaults   config.Transcode `json:"transcode_defaults"`
-	UptimeSecs int64            `json:"uptime_s"`
-	FFmpeg     string           `json:"ffmpeg"`
-	FFmpegOK   bool             `json:"ffmpeg_ok"`
-	Discovery  *ssdp.Stats      `json:"discovery,omitempty"`
-	Location   string           `json:"location"` // where a TV finds the description
+	Name      string        `json:"name"`
+	Version   string        `json:"version"`
+	DVR       string        `json:"dvr"`
+	DVRError  string        `json:"dvr_error,omitempty"`
+	DVRMillis int64         `json:"dvr_ms"`
+	DVRHealth []dvr.Health  `json:"dvr_health"`
+	DVRClient *registration `json:"dvr_client,omitempty"` // how the bridge is registered with the DVR
+	Activity  []string      `json:"dvr_activity"`
+	// ActivityOwn says Activity is only what the DVR does for the bridge's
+	// address; otherwise it is everything, the bridge's address being unknown.
+	ActivityOwn bool             `json:"dvr_activity_own"`
+	Channels    int              `json:"channels"`
+	Recs        int              `json:"recordings"`
+	Config      config.Config    `json:"config"`
+	ConfigPath  string           `json:"config_path"`
+	Saved       bool             `json:"saved"` // the config is kept in a file
+	Clients     []seenClient     `json:"clients"`
+	Streams     []jobView        `json:"streams"`
+	Defaults    config.Transcode `json:"transcode_defaults"`
+	UptimeSecs  int64            `json:"uptime_s"`
+	FFmpeg      string           `json:"ffmpeg"`
+	FFmpegOK    bool             `json:"ffmpeg_ok"`
+	Discovery   *ssdp.Stats      `json:"discovery,omitempty"`
+	Location    string           `json:"location"` // where a TV finds the description
 }
 
 func (s *Server) apiState(w http.ResponseWriter, r *http.Request) {
@@ -65,7 +68,17 @@ func (s *Server) apiState(w http.ResponseWriter, r *http.Request) {
 		st.Recs = len(recs)
 	}
 	if items, took, err := s.cfg.DVR.Activity(r.Context()); err == nil {
-		st.Activity, st.DVRMillis = items, took.Milliseconds()
+		st.DVRMillis = took.Milliseconds()
+		ip := ""
+		if st.DVRClient != nil {
+			ip = st.DVRClient.IP
+		}
+		st.ActivityOwn = ip != ""
+		for _, it := range items {
+			if ip == "" || it.IP == ip {
+				st.Activity = append(st.Activity, it.Text)
+			}
+		}
 	}
 	if st.Activity == nil {
 		st.Activity = []string{}

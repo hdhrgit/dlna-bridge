@@ -43,7 +43,7 @@
   <div class="card"><table id="streams"></table></div>
 
   <h2>What the DVR says it is doing</h2>
-  <p>Straight from the DVR, so it includes streams that do not pass through the bridge, and recordings in progress.</p>
+  <p id="activitynote"></p>
   <div class="card"><pre class="log" id="activity" style="max-height:200px"></pre></div>
 
   <h2>Clients that have connected</h2>
@@ -151,6 +151,11 @@ function renderSeen() {
       el('td', {}, j.ip, el('br'), el('small', { class: 'muted' }, (j.user_agent || '').slice(0, 50))), el('td', {}, mb(j.bytes)),
       el('td', {}, Math.round(j.bytes * 8 / 1000 / secs) + ' kbps'), el('td', {}, String(j.conns))); }), 'Nothing is passing through the bridge.'));
   $('activity').textContent = st.dvr_activity.length ? st.dvr_activity.join('\n') : (st.dvr_error ? 'The DVR does not answer.' : 'Nothing.');
+  const c = st.dvr_client;
+  $('activitynote').textContent = st.dvr_activity_own
+    ? 'Straight from the DVR: what it does for the bridge, which it knows as "' + c.dvr_name + '" at ' + c.ip + '.' +
+      (c.dvr_name !== c.name ? ' That is not the bridge\'s name: another client reaches the DVR from the same address, and the DVR cannot tell them apart, so this includes that client\'s streams. Point the bridge at an address of the DVR that only it uses.' : '')
+    : 'Straight from the DVR, so it includes streams that do not pass through the bridge, and recordings in progress.';
   $('seen').replaceChildren(...table(['Address', 'User-Agent', 'Profile', 'Last seen', 'Requests', ''],
     st.clients.map(c => el('tr', {}, el('td', {}, c.ip), el('td', { class: 'ua' }, c.user_agent || '(none)'),
       el('td', {}, c.profile || el('span', { class: 'tag' }, 'default')), el('td', {}, ago(c.last)), el('td', {}, String(c.requests)),

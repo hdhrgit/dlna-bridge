@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"time"
+
+	"dlna/internal/dvr"
 )
 
 // registration is how the last try at registering with the DVR went.
@@ -11,6 +13,12 @@ type registration struct {
 	ID    string    `json:"id,omitempty"`
 	At    time.Time `json:"at,omitempty"` // of the last success
 	Error string    `json:"error,omitempty"`
+	// IP is the address the DVR sees the bridge at, from its client list, and
+	// DVRName what it calls that client there: another name when another
+	// client reaches the DVR from the same address, which the DVR cannot tell
+	// apart from the bridge.
+	IP      string `json:"ip,omitempty"`
+	DVRName string `json:"dvr_name,omitempty"`
 }
 
 // KeepRegistered registers this program with the DVR under Config.ClientName,
@@ -26,6 +34,13 @@ func (s *Server) KeepRegistered(ctx context.Context) {
 	for {
 		ctx1, cancel := context.WithTimeout(ctx, 20*time.Second)
 		id, err := s.cfg.DVR.Register(ctx1, s.cfg.ClientName, s.cfg.UUID)
+		var entry dvr.ClientEntry
+		if err == nil {
+			// Not fatal: without it the status page shows all the DVR's activity.
+			if e, found, ierr := s.cfg.DVR.ClientInfo(ctx1, id); ierr == nil && found {
+				entry = e
+			}
+		}
 		cancel()
 		s.regMu.Lock()
 		first := s.reg.ID == "" && s.reg.Error == ""
@@ -35,6 +50,7 @@ func (s *Server) KeepRegistered(ctx context.Context) {
 			s.reg.Error = err.Error()
 		} else {
 			s.reg.ID, s.reg.At, s.reg.Error = id, time.Now(), ""
+			s.reg.IP, s.reg.DVRName = entry.LocalIP, entry.Hostname
 		}
 		s.regMu.Unlock()
 		switch {
@@ -42,6 +58,9 @@ func (s *Server) KeepRegistered(ctx context.Context) {
 			s.cfg.Logf("registering with the DVR as %q: %v; trying again in %s", s.cfg.ClientName, err, wait)
 		case err == nil && (first || failedBefore):
 			s.cfg.Logf("registered with the DVR as %q (client %s)", s.cfg.ClientName, id)
+			if entry.Hostname != "" && entry.Hostname != s.cfg.ClientName {
+				s.cfg.Logf("the DVR calls client %s %q: another client reaches it from the same address, %s, and it cannot tell them apart; point -dvr at an address of the DVR that only the bridge uses", id, entry.Hostname, entry.LocalIP)
+			}
 		}
 		next := s.regEvery
 		if err != nil {
