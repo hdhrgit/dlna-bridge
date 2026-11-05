@@ -151,8 +151,15 @@ without a jump. The pictures right after the keyframe that are shown before it r
 would decode as garbage, so their packets are replaced by empty ones.
 
 The result is one file of whole packets with a length, so the TVs can still seek; its listed duration and resume
-point leave the breaks out. Working out the cuts takes a few dozen range reads and is kept per recording. If it
-fails, the whole recording is served.
+point leave the breaks out. Working out the cuts takes a few hundred range reads of the recording (a second or
+two for a movie with 17 breaks): the search for each mark starts from the frames found for the earlier ones and
+estimates where the time is from the bitrate, instead of halving the file. The cut list is kept in memory for the
+32 recordings played last and in `plans` in the state directory, so a restart does not work it out again; it is
+replaced when the recording's size or marked breaks change.
+
+If the recording's video timestamps jump (a splice, an encoder restart), they no longer keep time with the DVR's
+marks, and cutting by them would remove the wrong stretches. The bridge notices, logs it once, and serves that
+recording whole.
 
 ## Develop
 

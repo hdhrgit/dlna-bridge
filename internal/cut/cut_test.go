@@ -3,6 +3,8 @@ package cut
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"io"
 	"math"
 	"testing"
@@ -57,7 +59,12 @@ func section(b []byte) []byte { return append([]byte{0}, b...) } // pointer fiel
 // testStream is secs seconds of video starting at PTS base, 21 packets a frame.
 // Frames come in decode order I B B P P...: the two B-frames after each
 // keyframe are shown before it, as in an open GOP.
-func testStream(secs int, base int64) []byte {
+func testStream(secs int, base int64) []byte { return testStreamNAL(secs, base, false) }
+
+// testStreamNAL is testStream, and with lateNAL the keyframes are not flagged
+// in the adaptation field and show their IDR slice only in the second packet of
+// the PES, after a picture delimiter in the first, as many streams do.
+func testStreamNAL(secs int, base int64, lateNAL bool) []byte {
 	var out []byte
 	pat := []byte{0x00, 0xb0, 13, 0, 1, 0xc1, 0, 0, 0, 1, 0xe0 | 0x10>>8, 0x10, 0, 0, 0, 0}
 	pmt := []byte{0x02, 0xb0, 18, 0, 1, 0xc1, 0, 0, 0xe1, 0x00, 0xf0, 0, 0x1b, 0xe1, 0x00, 0xf0, 0, 0, 0, 0, 0}
@@ -76,9 +83,19 @@ func testStream(secs int, base int64) []byte {
 		pes := []byte{0, 0, 1, 0xe0, 0, 0, 0x80, 0x80, 5,
 			byte(0x21 | pts>>29&0x0e), byte(pts >> 22), byte(pts>>14 | 1), byte(pts >> 7), byte(pts<<1 | 1),
 			0, 0, 1, 0x41} // a non-IDR slice
-		out = append(out, tsPacket(testVideoPID, true, f%testGOP == 0, pes)...)
-		for range 20 {
-			out = append(out, tsPacket(testVideoPID, false, false, []byte{1, 2, 3})...)
+		key := f%testGOP == 0
+		more := []byte{1, 2, 3}
+		if lateNAL && key {
+			pes = append(pes[:14:14], 0, 0, 1, 0x09, 0xf0) // a picture delimiter, not a slice
+			more = []byte{0, 0, 1, 0x65, 8, 8}             // the IDR slice
+		}
+		out = append(out, tsPacket(testVideoPID, true, key && !lateNAL, pes)...)
+		for i := 0; i < 20; i++ {
+			payload := []byte{1, 2, 3}
+			if i == 0 {
+				payload = more
+			}
+			out = append(out, tsPacket(testVideoPID, false, false, payload)...)
 		}
 	}
 	return out
@@ -195,5 +212,171 @@ func TestBreakToTheEnd(t *testing.T) {
 	}
 	if len(p.Parts) != 1 || p.Parts[0].Off != 0 {
 		t.Fatalf("parts: %+v", p.Parts)
+	}
+}
+
+// A PES header that says it is longer than the packet that holds it, as some
+// streams have, is not read past the end.
+func TestKeyframeNALShortPacket(t *testing.T) {
+	pes := make([]byte, 184)
+	pes[8] = 200 // header length beyond the packet
+	if keyframeNAL(pes, false) || keyframeNAL(pes, true) {
+		t.Error("found a keyframe in a header that runs past the packet")
+	}
+}
+
+// Keyframes whose slice comes after the first packet are found without the
+// keyframe flag.
+func TestKeyframeAfterTheFirstPacket(t *testing.T) {
+	src := memSource(testStreamNAL(60, 90000, true))
+	p, err := Make(context.Background(), src, []float64{10.2, 20.5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kept []Part
+	for _, part := range p.Parts {
+		if part.Data == nil {
+			kept = append(kept, part)
+		}
+	}
+	if len(kept) != 2 {
+		t.Fatalf("parts: %+v", p.Parts)
+	}
+	// The second part starts on the keyframe at 21 s, though nothing flags it.
+	if got := timeAt(t, src, kept[1].Off, 90000); got < 20.5 || got > 22.1 {
+		t.Errorf("resumes at %.2fs, want the keyframe at about 21s", got)
+	}
+}
+
+// A recording whose timestamps jump does not keep time with the DVR's marks,
+// and is refused rather than cut in the wrong places.
+func TestTimestampJumpIsRefused(t *testing.T) {
+	a, b := testStream(40, 90000), testStream(40, 90000+5000*90000)
+	_, err := Make(context.Background(), memSource(append(a, b...)), []float64{50, 55})
+	if !errors.Is(err, ErrTimeline) {
+		t.Errorf("err = %v, want the timeline error", err)
+	}
+}
+
+// countingSource counts what is asked of the recording.
+type countingSource struct {
+	memSource
+	reads int
+	bytes int64
+}
+
+func (c *countingSource) ReadAt(ctx context.Context, off, n int64) ([]byte, error) {
+	b, err := c.memSource.ReadAt(ctx, off, n)
+	c.reads++
+	c.bytes += int64(len(b))
+	return b, err
+}
+
+// Six breaks in ten minutes are found in few reads, at the right frames.
+func TestFewReads(t *testing.T) {
+	const secs = 600
+	base := int64(90000)
+	data := testStream(secs, base)
+	src := &countingSource{memSource: memSource(data)}
+	breaks := []float64{0, 12.3, 80.7, 131.2, 200.05, 241.9, 300.4, 352.8, 420.0, 470.5, 540.2, 590.0}
+	p, err := Make(context.Background(), src, breaks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kept []Part
+	for _, part := range p.Parts {
+		if part.Data == nil {
+			kept = append(kept, part)
+		}
+	}
+	// A break that starts at 0 leaves only the few packets before the first
+	// picture (the tables) ahead of it.
+	if len(kept) > 0 && kept[0].Off == 0 && kept[0].Len < 4096 {
+		kept = kept[1:]
+	}
+	// The first break starts at 0, so each kept part starts after break i (on the
+	// first keyframe past its end) and ends where break i+1 starts.
+	if len(kept) != len(breaks)/2 {
+		t.Fatalf("%d kept parts, want %d", len(kept), len(breaks)/2)
+	}
+	for i, part := range kept {
+		startT := timeAt(t, memSource(data), part.Off, base)
+		if to := breaks[2*i+1]; startT < to || startT > to+1.1 {
+			t.Errorf("part %d starts at %.2fs, its break ends at %.2fs", i, startT, to)
+		}
+		if i+1 < len(kept) {
+			endT := timeAt(t, memSource(data), part.Off+part.Len, base)
+			if from := breaks[2*i+2]; endT < from || endT > from+0.5 {
+				t.Errorf("part %d ends at %.2fs, the next break starts at %.2fs", i, endT, from)
+			}
+		}
+	}
+	// Halving the file for each of 12 marks took about 12 x 8 reads.
+	if src.reads > 60 {
+		t.Errorf("%d reads for %d breaks", src.reads, len(breaks)/2)
+	}
+	t.Logf("%d reads, %d kB of %d kB", src.reads, src.bytes>>10, len(data)>>10)
+}
+
+// The block cache gives the same bytes as the recording, and asks for a run of
+// missing blocks once.
+func TestBlockCache(t *testing.T) {
+	data := make([]byte, 700<<10+123)
+	for i := range data {
+		data[i] = byte(i * 7)
+	}
+	src := &countingSource{memSource: memSource(data)}
+	c := newBlockCache(src)
+	ctx := context.Background()
+	for _, r := range [][2]int64{{0, 100}, {5000, 200 << 10}, {100 << 10, 50 << 10}, {int64(len(data)) - 10, 100}, {300 << 10, 1}, {0, 700<<10 + 123}} {
+		got, err := c.ReadAt(ctx, r[0], r[1])
+		want := data[r[0]:min(r[0]+r[1], int64(len(data)))]
+		if err != nil || string(got) != string(want) {
+			t.Fatalf("read %v: %d bytes (%v), want %d", r, len(got), err, len(want))
+		}
+	}
+	reads := src.reads
+	if _, err := c.ReadAt(ctx, 150<<10, 10<<10); err != nil || src.reads != reads {
+		t.Errorf("a read inside what is held asked the recording again (%d reads, was %d)", src.reads, reads)
+	}
+	if _, err := c.ReadAt(ctx, int64(len(data)), 10); err == nil {
+		t.Error("a read past the end succeeded")
+	}
+	if len(c.blocks) > maxBlocks {
+		t.Errorf("%d blocks held", len(c.blocks))
+	}
+}
+
+// A plan survives a trip through JSON, and one that does not fit the recording
+// is not valid.
+func TestPlanJSON(t *testing.T) {
+	src := memSource(testStream(60, 90000))
+	p, err := Make(context.Background(), src, []float64{10.2, 20.5, 40, 45})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var q Plan
+	if err := json.Unmarshal(b, &q); err != nil {
+		t.Fatal(err)
+	}
+	if !q.Valid(src.Size()) || q.Size != p.Size || len(q.Parts) != len(p.Parts) || q.videoPID != p.videoPID {
+		t.Errorf("after JSON: %+v", q)
+	}
+	// Reading it gives the same bytes as the original.
+	a, _ := io.ReadAll(p.Open(context.Background(), src.open))
+	c, _ := io.ReadAll(q.Open(context.Background(), src.open))
+	if !bytes.Equal(a, c) {
+		t.Error("the restored plan reads differently")
+	}
+	if q.Valid(src.Size() / 2) {
+		t.Error("a plan for a longer file is valid for a shorter one")
+	}
+	q.Size++
+	if q.Valid(src.Size()) {
+		t.Error("a plan with the wrong size is valid")
 	}
 }

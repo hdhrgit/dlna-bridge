@@ -70,6 +70,10 @@ func main() {
 	if *configFile == "" && *state != "" {
 		*configFile = filepath.Join(*state, "config.json")
 	}
+	plansDir := ""
+	if *state != "" {
+		plansDir = filepath.Join(*state, "plans")
+	}
 	// The flags only set the start; once the page has saved the file, it wins.
 	start := config.Config{MaxTranscodes: *maxTranscodes, Default: config.Profile{Mode: *streams, Ads: config.AdsCut}}
 	if *keepAds {
@@ -104,7 +108,7 @@ func main() {
 	srv := server.New(server.Config{
 		Name: *name, UUID: uuid, Version: version,
 		DVR: client, DVRPublic: *dvrPublic, Settings: settings, FFmpeg: *ffmpeg,
-		TrustedProxies: trusted, SelfURL: "http://127.0.0.1:" + portStr, Debug: *debug, Bookmarks: bookmarks,
+		TrustedProxies: trusted, SelfURL: "http://127.0.0.1:" + portStr, PlansDir: plansDir, Debug: *debug, Bookmarks: bookmarks,
 		Logf: logs.Logf, Logs: logs, ConfigPath: *configFile,
 		Discovery: func() ssdp.Stats { return adv.Stats() },
 	})

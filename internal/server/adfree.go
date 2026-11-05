@@ -3,9 +3,15 @@ package server
 import (
 	"container/list"
 	"context"
+	"crypto/sha1"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -21,18 +27,27 @@ func (s *Server) adFree(f dvr.Recording) bool {
 }
 
 // plans keeps the cut list of the recordings played lately, which takes a few
-// dozen range reads to work out. It holds at most maxPlans, the least recently
-// used going first, and a recording's plan is dropped when its size or its
-// marked breaks change, so a library that keeps changing does not fill it.
+// hundred reads to work out. It holds at most maxPlans in memory, the least
+// recently used going first, and a recording's plan is dropped when its size or
+// its marked breaks change, so a library that keeps changing does not fill it.
+// With a directory, plans are also kept there, so that a restart does not work
+// them out again.
 type plans struct {
 	mu  sync.Mutex
 	m   map[string]*list.Element // by recording id
 	lru *list.List               // of *planEntry, most recently used first
 	// build makes a plan; cut.Make unless a test says otherwise.
 	build func(context.Context, cut.Source, []float64) (*cut.Plan, error)
+	dir   string
+	logf  func(format string, a ...any)
 }
 
-const maxPlans = 32
+const planVersion = 1 // changes when plans made earlier should not be used again
+
+var (
+	maxPlans     = 32
+	maxPlanFiles = 200
+)
 
 type planEntry struct {
 	id, key string
@@ -41,9 +56,15 @@ type planEntry struct {
 	err     error
 }
 
+func (p *plans) log(format string, a ...any) {
+	if p.logf != nil {
+		p.logf(format, a...)
+	}
+}
+
 func (p *plans) get(ctx context.Context, f dvr.Recording, file *dvr.File) (*cut.Plan, error) {
 	id := string(f.ID)
-	key := fmt.Sprintf("%d/%v", f.FileSize, f.Commercials)
+	key := fmt.Sprintf("v%d/%d/%v", planVersion, f.FileSize, f.Commercials)
 	p.mu.Lock()
 	if p.m == nil {
 		p.m, p.lru = map[string]*list.Element{}, list.New()
@@ -66,6 +87,10 @@ func (p *plans) get(ctx context.Context, f dvr.Recording, file *dvr.File) (*cut.
 	e := el.Value.(*planEntry)
 	p.mu.Unlock()
 	e.once.Do(func() {
+		if plan := p.load(id, key, f.FileSize); plan != nil {
+			e.plan = plan
+			return
+		}
 		// Not the request's context: a TV that hangs up should not leave a
 		// failed plan behind for the next try.
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
@@ -74,17 +99,97 @@ func (p *plans) get(ctx context.Context, f dvr.Recording, file *dvr.File) (*cut.
 		if build == nil {
 			build = cut.Make
 		}
+		started := time.Now()
 		e.plan, e.err = build(ctx, file, f.Commercials)
+		if e.err != nil {
+			p.log("adfree: recording %s: %v; serving it whole", id, e.err)
+			return
+		}
+		p.log("adfree: recording %s: %d parts, %d of %d bytes, planned in %s", id, len(e.plan.Parts), e.plan.Size, f.FileSize, time.Since(started).Round(time.Millisecond))
+		p.save(id, key, e.plan)
 	})
-	if e.err != nil {
+	// A plan that failed because of a network error is tried again next time; one
+	// that failed because the recording's timestamps are no good will fail again.
+	if e.err != nil && !errors.Is(e.err, cut.ErrTimeline) {
 		p.mu.Lock()
-		if cur := p.m[id]; cur == el { // try again next time
+		if cur := p.m[id]; cur == el {
 			p.lru.Remove(el)
 			delete(p.m, id)
 		}
 		p.mu.Unlock()
 	}
 	return e.plan, e.err
+}
+
+// planFile is a plan as kept on disk.
+type planFile struct {
+	Key  string    `json:"key"`
+	Plan *cut.Plan `json:"plan"`
+}
+
+func (p *plans) path(id string) string {
+	return filepath.Join(p.dir, fmt.Sprintf("%x.json", sha1.Sum([]byte(id))))
+}
+
+// load reads a plan from disk, if there is one for this recording as it is now.
+func (p *plans) load(id, key string, fileSize int64) *cut.Plan {
+	if p.dir == "" {
+		return nil
+	}
+	b, err := os.ReadFile(p.path(id))
+	if err != nil {
+		return nil
+	}
+	var pf planFile
+	if err := json.Unmarshal(b, &pf); err != nil || pf.Key != key || pf.Plan == nil || !pf.Plan.Valid(fileSize) {
+		os.Remove(p.path(id)) // for another version of the recording, or damaged
+		return nil
+	}
+	return pf.Plan
+}
+
+func (p *plans) save(id, key string, plan *cut.Plan) {
+	if p.dir == "" {
+		return
+	}
+	b, err := json.Marshal(planFile{key, plan})
+	if err == nil {
+		err = os.MkdirAll(p.dir, 0o755)
+	}
+	if err == nil {
+		tmp := p.path(id) + ".tmp"
+		if err = os.WriteFile(tmp, b, 0o644); err == nil {
+			err = os.Rename(tmp, p.path(id))
+		}
+	}
+	if err != nil {
+		p.log("adfree: keeping the plan of recording %s: %v", id, err)
+		return
+	}
+	p.prune()
+}
+
+// prune leaves the newest maxPlanFiles files, so the directory does not grow
+// with every recording ever played.
+func (p *plans) prune() {
+	entries, err := os.ReadDir(p.dir)
+	if err != nil || len(entries) <= maxPlanFiles {
+		return
+	}
+	type file struct {
+		name string
+		mod  time.Time
+	}
+	var files []file
+	for _, e := range entries {
+		if info, err := e.Info(); err == nil && !e.IsDir() {
+			files = append(files, file{e.Name(), info.ModTime()})
+		}
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].mod.After(files[j].mod) })
+	for _, f := range files[min(maxPlanFiles, len(files)):] {
+		os.Remove(filepath.Join(p.dir, f.name))
+	}
 }
 
 // streamAdFree plays a recording without its breaks: seekable like the
@@ -117,15 +222,10 @@ func (s *Server) adFreeRecording(w http.ResponseWriter, r *http.Request, id stri
 		return
 	}
 	file := s.cfg.DVR.File(f)
-	started := time.Now()
 	plan, err := s.plans.get(r.Context(), f, file)
 	if err != nil {
-		s.cfg.Logf("adfree: recording %s: %v; serving it whole", id, err)
-		s.proxy(w, r, dvr.RecordingPath(id), recFeatures)
+		s.proxy(w, r, dvr.RecordingPath(id), recFeatures) // the plans log why
 		return
-	}
-	if d := time.Since(started); d > 100*time.Millisecond {
-		s.cfg.Logf("adfree: recording %s: %d parts, %d of %d bytes, planned in %s", id, len(plan.Parts), plan.Size, f.FileSize, d.Round(time.Millisecond))
 	}
 	cf := plan.Open(r.Context(), file.Open)
 	defer cf.Close()

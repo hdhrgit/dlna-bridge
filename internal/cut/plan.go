@@ -3,10 +3,12 @@ package cut
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math"
+	"sort"
 )
 
 // Source reads byte ranges of the recording.
@@ -38,6 +40,19 @@ type Plan struct {
 	Kept [][2]float64
 }
 
+// A recording whose video timestamps jump (a splice, a restart of the encoder)
+// does not keep time with the DVR's marks, and cutting by them would remove the
+// wrong stretches. The frame found for a mark must be near the mark: a frame
+// shown within maxOutSlack seconds after where a break starts, and a keyframe
+// within maxInSlack after where it ends.
+const (
+	maxOutSlack = 5
+	maxInSlack  = 20
+)
+
+// ErrTimeline is the error for such a recording. The caller serves it whole.
+var ErrTimeline = errors.New("the video's timestamps do not keep time with the recording")
+
 // probe is how much is read at each step of the search. At a few Mbps that
 // holds several video frames, so one read nearly always finds a timestamp.
 const probe = 128 << 10
@@ -48,6 +63,7 @@ func Make(ctx context.Context, src Source, breaks []float64) (*Plan, error) {
 	if len(breaks)%2 != 0 {
 		return nil, fmt.Errorf("odd list of commercial marks (%d)", len(breaks))
 	}
+	src = newBlockCache(src)
 	head, err := src.ReadAt(ctx, 0, 1<<20)
 	if err != nil {
 		return nil, err
@@ -63,8 +79,14 @@ func Make(ctx context.Context, src Source, breaks []float64) (*Plan, error) {
 		return nil, err
 	}
 	f.base = base
-
+	f.note(0, int64(first))
 	size := src.Size()
+	// A frame near the end, so that every search has bounds.
+	if tail := f.align(max(size-2<<20, int64(first))); tail > int64(first) {
+		if pts, at, err := f.ptsAfter(tail); err == nil {
+			f.note(f.seconds(pts), at)
+		}
+	}
 	p := &Plan{videoPID: st.videoPID}
 	pos, posT := int64(0), 0.0 // the start of the part being kept
 	var shift int64            // the length of the breaks so far, in 90 kHz ticks
@@ -78,11 +100,16 @@ func Make(ctx context.Context, src Source, breaks []float64) (*Plan, error) {
 		if err != nil {
 			return nil, fmt.Errorf("break at %.1fs: %w", from, err)
 		}
+		if outT-from > maxOutSlack {
+			return nil, fmt.Errorf("break at %.1fs: the video there is at %.1fs: %w", from, outT, ErrTimeline)
+		}
 		in, inT, err := f.keyframeAfter(to)
 		if errors.Is(err, io.EOF) {
 			in, inT = size, to // the break runs to the end
 		} else if err != nil {
 			return nil, fmt.Errorf("end of break at %.1fs: %w", to, err)
+		} else if inT-to > maxInSlack {
+			return nil, fmt.Errorf("end of break at %.1fs: the next keyframe is at %.1fs: %w", to, inT, ErrTimeline)
 		}
 		if out > pos {
 			if pos > 0 {
@@ -118,6 +145,44 @@ func Make(ctx context.Context, src Source, breaks []float64) (*Plan, error) {
 	return p, nil
 }
 
+// planJSON is a Plan as kept on disk.
+type planJSON struct {
+	Parts    []Part       `json:"parts"`
+	Size     int64        `json:"size"`
+	Kept     [][2]float64 `json:"kept"`
+	VideoPID int          `json:"video_pid"`
+}
+
+func (p *Plan) MarshalJSON() ([]byte, error) {
+	return json.Marshal(planJSON{p.Parts, p.Size, p.Kept, p.videoPID})
+}
+
+func (p *Plan) UnmarshalJSON(b []byte) error {
+	var j planJSON
+	if err := json.Unmarshal(b, &j); err != nil {
+		return err
+	}
+	*p = Plan{Parts: j.Parts, Size: j.Size, Kept: j.Kept, videoPID: j.VideoPID}
+	return nil
+}
+
+// Valid says whether the plan fits a recording of fileSize bytes: its parts lie
+// inside the file, are whole packets, and add up to the size it claims. A plan
+// read back from disk is checked before it is used.
+func (p *Plan) Valid(fileSize int64) bool {
+	var total int64
+	for _, part := range p.Parts {
+		if part.Len <= 0 || part.Len%packetSize != 0 {
+			return false
+		}
+		if part.Data == nil && (part.Off < 0 || part.Off+part.Len > fileSize) {
+			return false
+		}
+		total += part.Len
+	}
+	return len(p.Parts) > 0 && total == p.Size
+}
+
 // CutTime turns a time in the recording into the time in the cut version.
 func (p *Plan) CutTime(t float64) float64 {
 	var out float64
@@ -140,6 +205,41 @@ type finder struct {
 	st    streams
 	first int64 // offset of the first packet
 	base  int64 // PTS of the first video frame
+	// samples are the frames seen so far: the video at byte off is shown at
+	// time t. Both only grow along the file, which lets a search for another time
+	// start from the nearest two instead of from the whole file.
+	samples []sample
+}
+
+type sample struct {
+	t   float64
+	off int64
+}
+
+// note remembers that the frame at off is shown at t.
+func (f *finder) note(t float64, off int64) {
+	i := sort.Search(len(f.samples), func(i int) bool { return f.samples[i].off >= off })
+	if i < len(f.samples) && f.samples[i].off == off {
+		return
+	}
+	f.samples = append(f.samples, sample{})
+	copy(f.samples[i+1:], f.samples[i:])
+	f.samples[i] = sample{t, off}
+}
+
+// bracket gives, for a time t, the offset just past a frame shown before t (lo,
+// at time tlo) and the offset of a frame shown at or after t (hi, at time thi).
+// There is no hi when no frame seen is that late.
+func (f *finder) bracket(t float64) (lo int64, tlo float64, hi int64, thi float64, haveHi bool) {
+	lo, tlo = f.first, 0
+	for _, s := range f.samples {
+		if s.t < t {
+			lo, tlo = s.off+packetSize, s.t
+		} else {
+			return lo, tlo, s.off, s.t, s.off > lo
+		}
+	}
+	return lo, tlo, 0, 0, false
 }
 
 // align rounds an offset down to a packet boundary.
@@ -182,24 +282,69 @@ func (f *finder) seconds(pts int64) float64 {
 	return float64((pts-f.base+ptsWrap)%ptsWrap) / 90000
 }
 
-// packetAt finds the first video frame at or after t seconds, by bisecting
-// the file on timestamps and then reading on from there.
+// packetAt finds the first video frame at or after t seconds. Frames seen
+// before bound it. Inside the bounds it estimates where t is from how many bytes
+// a second the video has been running at, reads there, and corrects the
+// estimate from what it finds: a few reads where halving the file takes a dozen.
+// Once close it aims a little to the other side of t, so that the bounds close
+// from both sides. It falls back to halving if that does not settle.
 func (f *finder) packetAt(t float64) (int64, float64, error) {
-	lo, hi := f.first, f.src.Size()
-	for hi-lo > probe {
-		mid := f.align(lo + (hi-lo)/2)
-		pts, at, err := f.ptsAfter(mid)
+	lo, tlo, hi, thi, haveHi := f.bracket(t)
+	if !haveHi {
+		return f.scan(lo, t, false) // later than any frame seen: near the end
+	}
+	rate := 1e6 // bytes a second
+	if thi > tlo {
+		rate = float64(hi-lo) / (thi - tlo)
+	}
+	var last sample // the frame read last, when there is one
+	haveLast := false
+	for iter := 0; hi-lo > probe && iter < 40; iter++ {
+		var g int64
+		switch {
+		case iter >= 12: // not settling: halve
+			g = lo + (hi-lo)/2
+		case haveLast:
+			aim := t
+			if d := last.t - t; d > -3 && d < 3 {
+				// Close: aim past t on the other side of the frame just read.
+				if d >= 0 {
+					aim = t - 0.3
+				} else {
+					aim = t + 0.3
+				}
+			}
+			g = last.off + int64((aim-last.t)*rate)
+		default:
+			// From the bracket end nearer to t.
+			if t-tlo <= thi-t {
+				g = lo + int64((t-tlo)*rate)
+			} else {
+				g = hi - int64((thi-t)*rate)
+			}
+		}
+		margin := int64(probe / 2)
+		g = min(max(g, lo+margin), hi-margin)
+		pts, at, err := f.ptsAfter(g)
 		if errors.Is(err, io.EOF) {
-			hi = mid
+			hi = f.align(g)
 			continue
 		}
 		if err != nil {
 			return 0, 0, err
 		}
-		if f.seconds(pts) < t {
-			lo = at + packetSize
+		tg := f.seconds(pts)
+		f.note(tg, at)
+		if haveLast && math.Abs(tg-last.t) > 0.05 && at != last.off {
+			if r := float64(at-last.off) / (tg - last.t); r > 0 {
+				rate = r
+			}
+		}
+		last, haveLast = sample{tg, at}, true
+		if tg < t {
+			lo, tlo = at+packetSize, tg
 		} else {
-			hi = mid
+			hi, thi = at, tg
 		}
 	}
 	return f.scan(lo, t, false)
@@ -214,6 +359,10 @@ func (f *finder) keyframeAfter(t float64) (int64, float64, error) {
 	return f.scan(off, t, true)
 }
 
+// scanChunk is how much a scan asks for at a time. It reads on in order, which
+// costs the DVR less than the same bytes in small reads from several places.
+const scanChunk = 256 << 10
+
 // scan reads on from off to the first video frame at or after t seconds (a
 // keyframe, if asked). Keyframes come every few seconds; it gives up after
 // 16 MB.
@@ -223,7 +372,7 @@ func (f *finder) scan(off int64, t float64, keyframe bool) (int64, float64, erro
 		if off >= f.src.Size() {
 			return 0, 0, io.EOF
 		}
-		b, err := f.src.ReadAt(f.ctx, off, probe)
+		b, err := f.src.ReadAt(f.ctx, off, scanChunk)
 		if err != nil {
 			return 0, 0, err
 		}
@@ -239,7 +388,7 @@ func (f *finder) scan(off int64, t float64, keyframe bool) (int64, float64, erro
 			if !ok || f.seconds(pts) < t {
 				continue
 			}
-			if !keyframe || pk.rai || keyframeNAL(pk.payload, f.st.hevc) {
+			if !keyframe || pk.rai || keyframeNAL(pesHead(b, i, f.st.videoPID), f.st.hevc) {
 				return off + int64(i), f.seconds(pts), nil
 			}
 		}
@@ -258,7 +407,7 @@ func (f *finder) leading(off int64, keyT float64) (from, to int64, err error) {
 		if off >= f.src.Size() {
 			return from, to, nil
 		}
-		b, err := f.src.ReadAt(f.ctx, off, probe)
+		b, err := f.src.ReadAt(f.ctx, off, scanChunk)
 		if err != nil {
 			return 0, 0, err
 		}
@@ -290,12 +439,34 @@ func (f *finder) leading(off int64, keyT float64) (from, to int64, err error) {
 	return 0, 0, nil // no end in sight: leave the pictures in
 }
 
+// pesHead is the start of the PES that begins in packet i of b: the rest of
+// its first 1 kB, taken from the packets that follow for the same stream, since
+// the headers before a keyframe's slice (a picture's delimiter, SPS, PPS,
+// SEI) often run past the first packet.
+func pesHead(b []byte, i int, pid int) []byte {
+	pk, ok := parsePacket(b[i:])
+	if !ok {
+		return nil
+	}
+	head := append([]byte(nil), pk.payload...)
+	for j := i + packetSize; j+packetSize <= len(b) && len(head) < 1024; j += packetSize {
+		next, ok := parsePacket(b[j:])
+		if !ok || (next.pid == pid && next.pusi) {
+			break
+		}
+		if next.pid == pid {
+			head = append(head, next.payload...)
+		}
+	}
+	return head
+}
+
 // keyframeNAL looks in the first packet of a PES for an H.264 SPS or IDR, or
 // an HEVC VPS, SPS or IRAP picture. MPEG-2 streams rely on the random access
 // flag alone.
 func keyframeNAL(pes []byte, hevc bool) bool {
-	if len(pes) < 9 {
-		return false
+	if len(pes) < 9 || 9+int(pes[8]) > len(pes) {
+		return false // the header runs on into the next packet: leave it to the keyframe flag
 	}
 	b := pes[9+int(pes[8]):]
 	for {

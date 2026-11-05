@@ -44,6 +44,9 @@ type Config struct {
 	// are believed. Empty: no headers are, and the connection's address is the
 	// client's.
 	TrustedProxies []*net.IPNet
+	// PlansDir is where the cut lists of recordings are kept between runs. Empty:
+	// they are not.
+	PlansDir string
 	// Logs is what the page shows of the log; Logf should write to it.
 	Logs *LogBuffer
 	// Discovery reports how discovery has gone.
@@ -73,7 +76,9 @@ func New(cfg Config) *Server {
 	if cfg.SelfURL == "" {
 		cfg.SelfURL = "http://127.0.0.1:8200"
 	}
-	return &Server{cfg: cfg, started: time.Now(), now: time.Now, notices: make(chan struct{}, 8)}
+	s := &Server{cfg: cfg, started: time.Now(), now: time.Now, notices: make(chan struct{}, 8)}
+	s.plans.dir, s.plans.logf = cfg.PlansDir, cfg.Logf
+	return s
 }
 
 func (s *Server) Handler() http.Handler {

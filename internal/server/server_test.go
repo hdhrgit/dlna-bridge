@@ -713,12 +713,12 @@ func TestPlansAreBoundedAndReplaced(t *testing.T) {
 	}
 	// A recent one is kept; the same recording again is not made again.
 	before := made
-	p.get(ctx, rec(itoa(3*maxPlans-1), 100), nil)
+	p.get(ctx, rec(itoa(int64(3*maxPlans-1)), 100), nil)
 	if made != before {
 		t.Error("a kept plan was made again")
 	}
 	// A recording whose file changed gets a new plan and does not add an entry.
-	p.get(ctx, rec(itoa(3*maxPlans-1), 200), nil)
+	p.get(ctx, rec(itoa(int64(3*maxPlans-1)), 200), nil)
 	if made != before+1 || len(p.m) != maxPlans {
 		t.Errorf("changed recording: made %d more, %d kept", made-before, len(p.m))
 	}
@@ -929,5 +929,86 @@ func TestUserAgentToTheDVR(t *testing.T) {
 	}
 	if args := strings.Join(ffmpegArgs(config.DefaultTranscode(), "http://dvr/x", false, "dlna-bridge/9.9"), " "); !strings.Contains(args, "-user_agent dlna-bridge/9.9 -i http://dvr/x") {
 		t.Errorf("ffmpeg: %s", args)
+	}
+}
+
+// Plans are kept on disk and used again by a server started later, unless the
+// recording changed; damaged files are ignored; the directory stays small.
+func TestPlansOnDisk(t *testing.T) {
+	dir := t.TempDir()
+	made := 0
+	plan := func() *cut.Plan {
+		// Two kept parts and the tables between them, 1 kB in all.
+		return &cut.Plan{Parts: []cut.Part{{Off: 0, Len: 188 * 3}, {Data: make([]byte, 188*2), Len: 188 * 2}, {Off: 188 * 10, Len: 188 * 2}}, Size: 188 * 7}
+	}
+	build := func(context.Context, cut.Source, []float64) (*cut.Plan, error) { made++; return plan(), nil }
+	rec := func(size int64) dvr.Recording {
+		return dvr.Recording{ID: "42", FileSize: size, Commercials: []float64{1, 2}}
+	}
+	ctx := context.Background()
+
+	a := &plans{dir: dir, build: build}
+	if _, err := a.get(ctx, rec(188*20), nil); err != nil || made != 1 {
+		t.Fatalf("first: %v, made %d", err, made)
+	}
+	// Another server, as after a restart.
+	b := &plans{dir: dir, build: build}
+	got, err := b.get(ctx, rec(188*20), nil)
+	if err != nil || made != 1 || got.Size != 188*7 {
+		t.Fatalf("after a restart: %v, made %d, %+v", err, made, got)
+	}
+	// The recording changed: made again.
+	c := &plans{dir: dir, build: build}
+	if _, err := c.get(ctx, rec(188*30), nil); err != nil || made != 2 {
+		t.Errorf("changed recording: %v, made %d", err, made)
+	}
+	// A damaged file, or one that does not fit the recording: made again.
+	os.WriteFile(a.path("42"), []byte("{not json"), 0o644)
+	d := &plans{dir: dir, build: build}
+	if _, err := d.get(ctx, rec(188*30), nil); err != nil || made != 3 {
+		t.Errorf("damaged file: %v, made %d", err, made)
+	}
+	// The directory is pruned to the newest files.
+	old := maxPlanFiles
+	maxPlanFiles = 3
+	defer func() { maxPlanFiles = old }()
+	e := &plans{dir: dir, build: build}
+	for i := 0; i < 8; i++ {
+		e.get(ctx, dvr.Recording{ID: dvr.FlexString(itoa(int64(100 + i))), FileSize: 188 * 20, Commercials: []float64{1, 2}}, nil)
+	}
+	if files, _ := os.ReadDir(dir); len(files) > 3 {
+		t.Errorf("%d files kept, want at most 3", len(files))
+	}
+}
+
+// A recording whose timestamps are no good is refused once, not on every request
+// (a TV makes a dozen when it opens one); a network error is tried again.
+func TestPlanFailures(t *testing.T) {
+	calls := 0
+	failWith := errors.New("DVR down")
+	p := &plans{build: func(context.Context, cut.Source, []float64) (*cut.Plan, error) {
+		calls++
+		return nil, failWith
+	}}
+	var logged []string
+	p.logf = func(format string, a ...any) { logged = append(logged, fmt.Sprintf(format, a...)) }
+	rec := dvr.Recording{ID: "7", FileSize: 188 * 20, Commercials: []float64{1, 2}}
+	ctx := context.Background()
+
+	for i := 0; i < 3; i++ {
+		p.get(ctx, rec, nil)
+	}
+	if calls != 3 {
+		t.Errorf("a network error was tried %d times, want 3", calls)
+	}
+	calls, logged, failWith = 0, nil, fmt.Errorf("break at 5s: %w", cut.ErrTimeline)
+	p = &plans{logf: p.logf, build: p.build}
+	for i := 0; i < 20; i++ {
+		if _, err := p.get(ctx, rec, nil); !errors.Is(err, cut.ErrTimeline) {
+			t.Fatalf("err %v", err)
+		}
+	}
+	if calls != 1 || len(logged) != 1 {
+		t.Errorf("a timeline failure was worked out %d times and logged %d times, want once each", calls, len(logged))
 	}
 }
