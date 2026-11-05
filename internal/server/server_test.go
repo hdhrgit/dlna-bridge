@@ -1235,3 +1235,76 @@ func TestPlanAhead(t *testing.T) {
 		t.Errorf("planned %v while no client cuts", planned)
 	}
 }
+
+// The status page shows only what the DVR does for the bridge's address, once
+// registering has told it that address, and says when the DVR knows that
+// address by another client's name.
+func TestOwnActivity(t *testing.T) {
+	hostname := "DLNA Bridge"
+	dvrSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/dvr/clients/register":
+			io.WriteString(w, `{"cid":"cid-9"}`)
+		case "/dvr/clients/info":
+			io.WriteString(w, `[{"id":"other","hostname":"iPad","local_ip":"10.0.0.8"},{"id":"cid-9","hostname":"`+hostname+`","local_ip":"10.0.0.2"}]`)
+		case "/dvr":
+			io.WriteString(w, `{"activity":{"6-file-57285-10.0.0.2":"Watching News from DLNA Bridge","6-file-1-10.0.0.8":"Watching Nova from iPad","0-recording":"Recording Nova"}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer dvrSrv.Close()
+	c, _ := dvr.New(dvrSrv.URL)
+	var lmu sync.Mutex
+	var logs []string
+	srv := New(Config{DVR: c, Settings: mustSettings(t, config.Config{}), ClientName: "DLNA Bridge",
+		Logf: func(f string, a ...any) { lmu.Lock(); logs = append(logs, fmt.Sprintf(f, a...)); lmu.Unlock() }})
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	state := func() (st struct {
+		Activity []string `json:"dvr_activity"`
+		Own      bool     `json:"dvr_activity_own"`
+		Client   struct {
+			IP      string `json:"ip"`
+			DVRName string `json:"dvr_name"`
+		} `json:"dvr_client"`
+	}) {
+		resp, err := http.Get(ts.URL + "/api/state")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		json.NewDecoder(resp.Body).Decode(&st)
+		return st
+	}
+	if st := state(); st.Own || len(st.Activity) != 3 {
+		t.Errorf("before registering: %+v", st)
+	}
+	register := func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() { srv.KeepRegistered(ctx); close(done) }()
+		for deadline := time.Now().Add(2 * time.Second); srv.registration().ID == "" && time.Now().Before(deadline); {
+			time.Sleep(5 * time.Millisecond)
+		}
+		cancel()
+		<-done
+	}
+	register()
+	if st := state(); !st.Own || len(st.Activity) != 1 || st.Activity[0] != "Watching News from DLNA Bridge" || st.Client.IP != "10.0.0.2" {
+		t.Errorf("registered: %+v", st)
+	}
+
+	// Another client on the bridge's address: the DVR names it, and the log says so.
+	hostname = "Home Theater"
+	srv.reg = registration{}
+	register()
+	if st := state(); st.Client.DVRName != "Home Theater" {
+		t.Errorf("shared address: %+v", st)
+	}
+	lmu.Lock()
+	defer lmu.Unlock()
+	if !strings.Contains(strings.Join(logs, "\n"), `the DVR calls client cid-9 "Home Theater"`) {
+		t.Errorf("logs: %q", logs)
+	}
+}

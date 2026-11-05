@@ -112,7 +112,14 @@ The DVR names a viewer by the address it connects from. Without a name, everythi
 shows in the DVR's activity list as "Watching … from 192.168.1.10", the bridge's address. At start-up, and every
 half hour after, the bridge registers with the DVR (`POST /dvr/clients/register`) under `-client-name`, so the
 activity list says "from DLNA Bridge", and the DVR's client list has an entry of that name. The name is separate
-from the DLNA name (`-name`) that the TVs show. The status page says how it went. All the TVs share the one
+from the DLNA name (`-name`) that the TVs show. The status page says how it went, and under *What the DVR says
+it is doing* shows only what the DVR does for the bridge's address.
+
+The DVR tells clients apart by address alone. If another client reaches the DVR from the same address as the
+bridge, for example both through a proxy on the DVR's machine, so both come from `127.0.0.1`, the DVR takes them
+for one client, under one name, and the bridge's streams may show under the other's. The status page and the
+log say so. Point `-dvr` at an address of the DVR that only the bridge uses, such as its LAN address and own
+port (`http://192.168.1.10:8089`) instead of the proxy. All the TVs share the one
 name, since they all reach the DVR through the bridge. A client set to *Direct* is not the bridge's: the DVR
 names it by that TV's own address.
 
