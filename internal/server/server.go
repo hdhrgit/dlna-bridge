@@ -86,6 +86,8 @@ type Server struct {
 
 	// subs are the TVs subscribed to ContentDirectory events; updateID is
 	// the SystemUpdateID, which goes up when the recordings change.
+	art artStore // the pictures handed out at the bridge's address
+
 	subsMu   sync.Mutex
 	subs     map[string]*subscription
 	updateID atomic.Int64
@@ -125,6 +127,7 @@ func (s *Server) Handler() http.Handler {
 		w.Header().Set("Content-Type", typ)
 		w.Write(b)
 	})
+	mux.HandleFunc("GET /art/{name}", s.serveArt)
 	mux.HandleFunc("GET /icons/{name}", func(w http.ResponseWriter, r *http.Request) {
 		b, typ, ok := iconFile(r.PathValue("name"))
 		if !ok {
@@ -150,7 +153,7 @@ func logRequests(logf func(string, ...any), version string, who func(*http.Reque
 		w.Header().Set("Server", serverHeader(version))
 		// The settings page polls every few seconds and would drown the rest.
 		p := r.URL.Path
-		if strings.HasPrefix(p, "/ctl/") || strings.HasPrefix(p, "/api/") || strings.HasPrefix(p, "/icons/") || p == "/" || p == "/favicon.ico" {
+		if strings.HasPrefix(p, "/ctl/") || strings.HasPrefix(p, "/api/") || strings.HasPrefix(p, "/icons/") || strings.HasPrefix(p, "/art/") || p == "/" || p == "/favicon.ico" {
 			h.ServeHTTP(w, r)
 			return
 		}

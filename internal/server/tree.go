@@ -267,6 +267,15 @@ func bookmarkID(id string) string {
 	return id
 }
 
+// channelArt is a channel's logo, or for one without, the Live TV icon:
+// an LG leaves items without a picture out of the list.
+func (s *Server) channelArt(v view, logo string) string {
+	if logo == "" {
+		return s.folderArt(v, idLive)
+	}
+	return s.artURL(v, logo)
+}
+
 // folderArt is the address of a top folder's icon, as the client reaches it.
 func (s *Server) folderArt(v view, id string) string {
 	return "http://" + v.host + "/icons/folder-" + id + ".png"
@@ -295,7 +304,7 @@ func (s *Server) channelObject(v view, ch dvr.Channel, id, parent, device, show 
 	res := s.resource(v, dvr.LivePath(device, ch.Number), "/stream/live/"+url.PathEscape(ch.Number), q, false, liveProtocol)
 	return object{
 		ID: id, Parent: parent, Title: title, Class: classLive,
-		URL: res.url, Protocol: res.protocol, Art: ch.Logo, ChannelNr: ch.Number, ChannelName: ch.Name,
+		URL: res.url, Protocol: res.protocol, Art: s.channelArt(v, ch.Logo), ChannelNr: ch.Number, ChannelName: ch.Name,
 		// A Samsung shows an item without a date as 1969.
 		Date: time.Now(),
 	}
@@ -405,7 +414,7 @@ func (s *Server) recordingObject(v view, f dvr.Recording, id, parent string) obj
 	res := s.resource(v, dvr.RecordingPath(string(f.ID)), bridge, nil, cut, recProtocol)
 	o := object{
 		ID: id, Parent: parent, Title: recordingTitle(f), Class: classRecorded,
-		URL: res.url, Protocol: res.protocol, Duration: f.Duration, Art: img, Description: f.Airing.Summary,
+		URL: res.url, Protocol: res.protocol, Duration: f.Duration, Art: s.artURL(v, img), Description: f.Airing.Summary,
 		Date: f.Created(), Bookmark: bm,
 	}
 	if cut {
@@ -457,7 +466,7 @@ func (s *Server) recordingTree(ctx context.Context, v view) (folders, items []ob
 		if title == "" {
 			title = "Other"
 		}
-		a := art[gid]
+		a := s.artURL(v, art[gid])
 		if a == "" {
 			a = s.folderArt(v, idRecordings)
 		}

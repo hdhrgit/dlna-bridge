@@ -7,6 +7,8 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"image"
+	"image/jpeg"
 	"image/png"
 	"io"
 	"net"
@@ -1641,5 +1643,44 @@ func TestFolderIcons(t *testing.T) {
 	}
 	if resp, _ := http.Get(s.URL + "/icons/folder-nope.png"); resp.StatusCode != 404 {
 		t.Errorf("unknown folder icon: %d", resp.StatusCode)
+	}
+}
+
+// The DVR's pictures are handed out at the bridge's own address and served
+// from there as a JPEG thumbnail; an address not handed out is not fetched.
+func TestArtProxy(t *testing.T) {
+	big := image.NewRGBA(image.Rect(0, 0, 720, 540))
+	for i := range big.Pix {
+		big.Pix[i] = 0x80
+	}
+	var buf bytes.Buffer
+	jpeg.Encode(&buf, big, nil)
+	pics := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Write(buf.Bytes())
+	}))
+	defer pics.Close()
+	srv := New(Config{Settings: mustSettings(t, config.Config{})})
+	v := view{host: "10.0.0.2:8200"}
+	u := srv.artURL(v, pics.URL+"/p123.jpg?w=720")
+	if !strings.HasPrefix(u, "http://10.0.0.2:8200/art/") || !strings.HasSuffix(u, ".jpg") {
+		t.Fatalf("art address %q", u)
+	}
+	if got := srv.artURL(v, ""); got != "" {
+		t.Errorf("no picture became %q", got)
+	}
+	s := httptest.NewServer(srv.Handler())
+	defer s.Close()
+	resp, err := http.Get(s.URL + strings.TrimPrefix(u, "http://10.0.0.2:8200"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, err := jpeg.Decode(resp.Body)
+	resp.Body.Close()
+	if err != nil || img.Bounds().Dx() != 160 || img.Bounds().Dy() != 120 {
+		t.Fatalf("thumbnail: %v %v", err, img.Bounds())
+	}
+	if resp, _ := http.Get(s.URL + "/art/0123456789abcdef0123.jpg"); resp.StatusCode != 404 {
+		t.Errorf("an address not handed out: %d", resp.StatusCode)
 	}
 }
