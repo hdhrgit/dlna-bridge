@@ -142,7 +142,9 @@ names it by that TV's own address.
 TVs keep the lists they have browsed. The bridge follows the DVR's own event stream (`/dvr/events/subscribe`),
 and when a recording starts, finishes, has its breaks marked or is deleted, it tells the TVs that subscribed to
 its change events, so that they browse again. If the stream drops, as when the DVR restarts, the bridge looks at
-the DVR's newest recordings every minute until it connects again, and catches up on what changed meanwhile. A TV that ignores the events shows the new recording when its folder
+the DVR's newest recordings every minute until it connects again, and catches up on what changed meanwhile. The
+channel folders are titled with the show on now, so the bridge also looks at the guide every 5 minutes and,
+when a show has changed, tells the TVs that Live TV, Favorites and Channels by source changed. A TV that ignores the events shows the new recording when its folder
 is opened again, or after its media app is restarted.
 
 ## Clients
