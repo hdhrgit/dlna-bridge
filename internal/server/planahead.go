@@ -14,14 +14,15 @@ const (
 	planAheadLook  = 25
 )
 
-// PlanAhead works out the cuts of each new recording once the DVR has marked
-// its breaks, so that the first play starts without waiting for them. Only
+// PlanAhead works out the cuts of each new recording with enough breaks
+// (Config.PlanAheadBreaks) once the DVR has marked them, so that the first play starts without
+// waiting for them. Only
 // recordings that are new since the start are planned, not the library: it
 // looks at the DVR's newest few, one short request every planAheadEvery, and
-// plans one at a time. It does nothing without a plans directory, or while no
-// client has its commercials cut.
+// plans one at a time. It does nothing without a plans directory, with
+// PlanAheadBreaks 0, or while no client has its commercials cut.
 func (s *Server) PlanAhead(ctx context.Context) {
-	if s.cfg.PlansDir == "" {
+	if s.cfg.PlansDir == "" || s.cfg.PlanAheadBreaks <= 0 {
 		return
 	}
 	seen := map[string]bool{}
@@ -48,7 +49,7 @@ func (s *Server) planNewest(ctx context.Context, seen map[string]bool, first boo
 		return
 	}
 	for _, n := range newest {
-		if !n.Completed || !n.Processed || len(n.Commercials) < 2 {
+		if !n.Completed || !n.Processed || len(n.Commercials)/2 < s.cfg.PlanAheadBreaks {
 			continue
 		}
 		key := fmt.Sprint(n.ID, n.Commercials)

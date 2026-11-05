@@ -1174,11 +1174,13 @@ func TestRegisterIntervalsSet(t *testing.T) {
 }
 
 // Plan ahead leaves the recordings there at the start, plans one that is
-// finished and marked later, once, and asks only for the newest and for that
-// one recording, never for the whole library.
+// finished and marked later with enough breaks, once, leaves one with few
+// breaks to its first play, and asks only for the newest and for the one
+// recording, never for the whole library.
 func TestPlanAhead(t *testing.T) {
+	const six = `[10,20,30,40,50,60,70,80,90,100,110,120]`
 	var mu sync.Mutex
-	newest := `[{"id":"5","completed":true,"processed":true,"commercials":[1,2]}]`
+	newest := `[{"id":"5","completed":true,"processed":true,"commercials":` + six + `}]`
 	var paths []string
 	d := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
@@ -1191,7 +1193,11 @@ func TestPlanAhead(t *testing.T) {
 			}
 			io.WriteString(w, newest)
 		case "/dvr/files/6":
-			io.WriteString(w, `{"ID":"6","Airing":{"Title":"Nova"},"Completed":true,"Processed":true,"FileSize":1000,"Commercials":[10,20]}`)
+			io.WriteString(w, `{"ID":"6","Airing":{"Title":"Nova"},"Completed":true,"Processed":true,"FileSize":1000,"Commercials":`+six+`}`)
+		case "/dvr/files/8":
+			t.Error("asked for a recording with few breaks")
+		case "/dvr/files/9":
+			io.WriteString(w, `{"ID":"9","Airing":{"Title":"News"},"Completed":true,"Processed":true,"FileSize":1000,"Commercials":[10,20,30,40]}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -1199,23 +1205,24 @@ func TestPlanAhead(t *testing.T) {
 	defer d.Close()
 	c, _ := dvr.New(d.URL)
 	settings, _ := config.Open("", config.Config{})
-	srv := New(Config{DVR: c, Settings: settings, PlansDir: t.TempDir()})
+	srv := New(Config{DVR: c, Settings: settings, PlansDir: t.TempDir(), PlanAheadBreaks: 6})
 	var planned []string
 	srv.plans.build = func(_ context.Context, _ cut.Source, b []float64) (*cut.Plan, error) {
-		planned = append(planned, fmt.Sprint(b))
+		planned = append(planned, fmt.Sprint(len(b)/2))
 		return &cut.Plan{}, nil
 	}
 	seen := map[string]bool{}
 	ctx := context.Background()
 	srv.planNewest(ctx, seen, true)
 	mu.Lock()
-	newest = `[{"id":"6","completed":true,"processed":true,"commercials":[10,20]},
+	newest = `[{"id":"6","completed":true,"processed":true,"commercials":` + six + `},
+		{"id":"8","completed":true,"processed":true,"commercials":[10,20,30,40]},
 		{"id":"7","completed":true,"processed":false},
-		{"id":"5","completed":true,"processed":true,"commercials":[1,2]}]`
+		{"id":"5","completed":true,"processed":true,"commercials":` + six + `}]`
 	mu.Unlock()
 	srv.planNewest(ctx, seen, false)
 	srv.planNewest(ctx, seen, false)
-	if len(planned) != 1 || planned[0] != "[10 20]" {
+	if len(planned) != 1 || planned[0] != "6" {
 		t.Errorf("planned %v, want recording 6 once", planned)
 	}
 	for _, p := range paths {
@@ -1228,11 +1235,30 @@ func TestPlanAhead(t *testing.T) {
 	keep, _ := config.Open("", config.Config{Default: config.Profile{Ads: config.AdsKeep}})
 	srv.cfg.Settings = keep
 	mu.Lock()
-	newest = `[{"id":"6","completed":true,"processed":true,"commercials":[10,30]}]`
+	newest = `[{"id":"6","completed":true,"processed":true,"commercials":[10,30,40,50,60,70,80,90,100,110,120,130]}]`
 	mu.Unlock()
 	srv.planNewest(ctx, seen, false)
 	if len(planned) != 1 {
 		t.Errorf("planned %v while no client cuts", planned)
+	}
+	// A cut-off of 0 plans nothing ahead: PlanAhead returns at once.
+	off := New(Config{DVR: c, Settings: settings, PlansDir: t.TempDir()})
+	done := make(chan struct{})
+	go func() { off.PlanAhead(ctx); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Error("PlanAhead runs with a cut-off of 0")
+	}
+
+	// A lower cut-off plans the recording with few breaks too.
+	srv.cfg.Settings, srv.cfg.PlanAheadBreaks = settings, 2
+	mu.Lock()
+	newest = `[{"id":"9","completed":true,"processed":true,"commercials":[10,20,30,40]}]`
+	mu.Unlock()
+	srv.planNewest(ctx, seen, false)
+	if len(planned) != 2 {
+		t.Errorf("planned %v with a cut-off of 2", planned)
 	}
 }
 
