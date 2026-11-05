@@ -59,15 +59,23 @@ func (f *File) Read(b []byte) (int, error) {
 		}
 		if f.body == nil || f.bodyPos != f.pos {
 			f.closeBody()
-			skip := in % packetSize // a seek into the middle of a packet
-			body, err := f.open(f.ctx, p.Off+in-skip, p.Len-in+skip)
+			// The shifter changes whole packets, so it starts a little before
+			// pos, where it can find the packet holding pos even if damage has
+			// moved the packets off the grid; the bytes before pos are dropped.
+			// Bytes passed as they are can start at pos itself.
+			from := in
+			shifted := p.Shift != 0 || p.DropTo > 0
+			if shifted {
+				from = max(0, in-in%packetSize-2*packetSize)
+			}
+			body, err := f.open(f.ctx, p.Off+from, p.Len-from)
 			if err != nil {
 				return 0, err
 			}
-			if p.Shift != 0 || p.DropTo > 0 {
-				body = &shifter{r: body, shift: p.Shift, pos: in - skip, dropFrom: p.DropFrom, dropTo: p.DropTo, videoPID: f.plan.videoPID}
+			if shifted {
+				body = &shifter{r: body, shift: p.Shift, pos: from, dropFrom: p.DropFrom, dropTo: p.DropTo, videoPID: f.plan.videoPID}
 			}
-			if _, err := io.CopyN(io.Discard, body, skip); err != nil {
+			if _, err := io.CopyN(io.Discard, body, in-from); err != nil {
 				body.Close()
 				return 0, err
 			}
@@ -103,43 +111,86 @@ func (f *File) Close() error {
 	return nil
 }
 
-// shifter passes a stream of whole packets through, moving the timestamps back.
+// shifter passes a stream of packets through, moving the timestamps back. Bytes
+// that are not a whole packet (one cut short by damage) pass as they are, and
+// the packets after them are found again.
 type shifter struct {
 	r                io.ReadCloser
 	shift            int64
-	pos              int64 // of the next packet in the part
+	pos              int64 // of buf's first byte in the part
 	dropFrom, dropTo int64
 	videoPID         int
-	buf              []byte // converted bytes not yet read
-	raw              [packetSize * 64]byte
+	raw              []byte // read, not yet looked at
+	buf              []byte // looked at, not yet returned
+	eof              bool
+	err              error
 }
 
+// shifterRead is how much the shifter reads at a time.
+const shifterRead = packetSize * 64
+
 func (s *shifter) Read(b []byte) (int, error) {
-	if len(s.buf) == 0 {
-		n, err := io.ReadFull(s.r, s.raw[:])
-		n -= n % packetSize
-		if n == 0 {
-			if err == io.ErrUnexpectedEOF {
-				err = io.EOF
-			}
-			return 0, err
+	for len(s.buf) == 0 {
+		if s.err != nil {
+			return 0, s.err
 		}
-		for i := 0; i < n; i += packetSize {
-			p := s.raw[i : i+packetSize]
-			if p[0] == 0x47 {
-				if s.pos >= s.dropFrom && s.pos < s.dropTo && (int(p[1]&0x1f)<<8|int(p[2])) == s.videoPID {
-					nullPacket(p)
-				} else {
-					shiftPacket(p, s.shift)
-				}
-			}
-			s.pos += packetSize
-		}
-		s.buf = s.raw[:n]
+		s.fill()
 	}
 	n := copy(b, s.buf)
 	s.buf = s.buf[n:]
 	return n, nil
+}
+
+// fill reads on and makes the next run of bytes ready in buf.
+func (s *shifter) fill() {
+	// Two packets past the one looked at, to tell whether it is whole.
+	for !s.eof && len(s.raw) < shifterRead+2*packetSize {
+		chunk := make([]byte, shifterRead)
+		n, err := io.ReadFull(s.r, chunk)
+		s.raw = append(s.raw, chunk[:n]...)
+		if err != nil {
+			s.eof = true
+			if err != io.EOF && err != io.ErrUnexpectedEOF {
+				s.err = err
+			}
+		}
+	}
+	keep := 0 // what stays in raw: bytes too near the end to judge yet
+	if !s.eof {
+		keep = 2 * packetSize
+	}
+	out := s.raw[:0:0]
+	i := 0
+	for i < len(s.raw)-keep {
+		j := resync(s.raw, i)
+		if j < 0 {
+			if s.eof {
+				j = len(s.raw)
+			} else {
+				j = len(s.raw) - keep
+			}
+		}
+		if j > i { // not a packet: as it is
+			out = append(out, s.raw[i:j]...)
+			s.pos += int64(j - i)
+			i = j
+			continue
+		}
+		p := append([]byte(nil), s.raw[i:i+packetSize]...)
+		if s.pos >= s.dropFrom && s.pos < s.dropTo && (int(p[1]&0x1f)<<8|int(p[2])) == s.videoPID {
+			nullPacket(p)
+		} else {
+			shiftPacket(p, s.shift)
+		}
+		out = append(out, p...)
+		s.pos += packetSize
+		i += packetSize
+	}
+	s.raw = append([]byte(nil), s.raw[i:]...)
+	s.buf = out
+	if len(out) == 0 && s.eof && s.err == nil {
+		s.err = io.EOF
+	}
 }
 
 func (s *shifter) Close() error { return s.r.Close() }

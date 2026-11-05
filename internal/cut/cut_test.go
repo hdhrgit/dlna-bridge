@@ -380,3 +380,89 @@ func TestPlanJSON(t *testing.T) {
 		t.Error("a plan with the wrong size is valid")
 	}
 }
+
+func TestResync(t *testing.T) {
+	pk := func() []byte { return tsPacket(testVideoPID, false, false, []byte{1}) }
+	var b []byte
+	b = append(b, pk()...)
+	b = append(b, pk()[:100]...) // cut short
+	b = append(b, pk()...)
+	b = append(b, pk()...)
+	b = append(b, pk()...)
+	if got := resync(b, 0); got != 0 {
+		t.Errorf("at a whole packet: %d", got)
+	}
+	if got := resync(b, packetSize); got != packetSize+100 {
+		t.Errorf("after the short packet: %d, want %d", got, packetSize+100)
+	}
+	if got := resync(b, 7); got != packetSize+100 {
+		t.Errorf("from inside a packet: %d", got)
+	}
+}
+
+// damage cuts a packet short every so often from the byte at from, as a weak
+// signal does, so the packets after it are off the grid.
+func damage(b []byte, from int64, every int) []byte {
+	var out []byte
+	out = append(out, b[:from]...)
+	for i, n := from, 0; i+packetSize <= int64(len(b)); i, n = i+packetSize, n+1 {
+		p := b[i : i+packetSize]
+		pk, _ := parsePacket(p)
+		if n%every == every-1 && !pk.pusi && pk.pid == testVideoPID {
+			out = append(out, p[:60+n%100]...)
+			continue
+		}
+		out = append(out, p...)
+	}
+	return out
+}
+
+// A recording with damaged packets throughout is still cut: the breaks are
+// found, the timestamps after them run on, and seeking reads the same bytes.
+func TestDamagedRecording(t *testing.T) {
+	base := int64(90000)
+	src := memSource(damage(testStream(60, base), 50*packetSize, 97))
+	p, err := Make(context.Background(), src, []float64{10.2, 20.5, 40, 45})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.Valid(src.Size()) {
+		t.Error("the plan is not valid for the file")
+	}
+	f := p.Open(context.Background(), src.open)
+	all, err := io.ReadAll(f)
+	if err != nil || int64(len(all)) != p.Size {
+		t.Fatalf("read %d of %d: %v", len(all), p.Size, err)
+	}
+	// Every whole video frame start keeps time within a second of the one
+	// before, across the joins.
+	var last int64 = -1
+	frames := 0
+	for i := resync(all, 0); i >= 0; i = resync(all, i+packetSize) {
+		pk, _ := parsePacket(all[i:])
+		if pk.pid != testVideoPID || !pk.pusi {
+			continue
+		}
+		pts, ok := pesPTS(pk.payload)
+		if !ok {
+			continue
+		}
+		if last >= 0 && math.Abs(float64(pts-last)) > 90000 {
+			t.Fatalf("frame %d: PTS %d after %d", frames, pts, last)
+		}
+		last = pts
+		frames++
+	}
+	// 60 s at 30 a second, less about 15 s of breaks.
+	if frames < 40*testFPS || frames > 47*testFPS {
+		t.Errorf("%d frames", frames)
+	}
+	for _, off := range []int64{100, p.Size / 3, p.Size/3 + 7, p.Size / 2, p.Size - 500} {
+		f.Seek(off, io.SeekStart)
+		b := make([]byte, 1000)
+		n, _ := io.ReadFull(f, b)
+		if n == 0 || !bytes.Equal(b[:n], all[off:off+int64(n)]) {
+			t.Errorf("seek to %d read different bytes", off)
+		}
+	}
+}

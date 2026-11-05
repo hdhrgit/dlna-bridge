@@ -31,6 +31,32 @@ func sync(b []byte) int {
 	return -1
 }
 
+// resync is the start of the first whole packet at or after i in b, or -1. A
+// recording can hold damaged packets, cut short where the signal dropped, after
+// which the packets no longer fall every packetSize bytes from the start; past
+// one, the next start is where three packets line up again. A packet is taken
+// as whole when the next one starts right after it, or b ends first.
+func resync(b []byte, i int) int {
+	if i+packetSize > len(b) {
+		return -1
+	}
+	if b[i] == 0x47 && (i+2*packetSize > len(b) || b[i+packetSize] == 0x47) {
+		return i
+	}
+	for j := i + 1; j+packetSize <= len(b); j++ {
+		if b[j] != 0x47 {
+			continue
+		}
+		if j+3*packetSize > len(b) {
+			return -1 // too near the end to tell: the next read will
+		}
+		if b[j+packetSize] == 0x47 && b[j+2*packetSize] == 0x47 {
+			return j
+		}
+	}
+	return -1
+}
+
 type packet struct {
 	pid     int
 	pusi    bool // a PES or section starts here

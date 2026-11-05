@@ -172,8 +172,8 @@ func (p *Plan) UnmarshalJSON(b []byte) error {
 func (p *Plan) Valid(fileSize int64) bool {
 	var total int64
 	for _, part := range p.Parts {
-		if part.Len <= 0 || part.Len%packetSize != 0 {
-			return false
+		if part.Len <= 0 || (part.Data != nil && part.Len%packetSize != 0) {
+			return false // a part of the recording may hold damaged packets
 		}
 		if part.Data == nil && (part.Off < 0 || part.Off+part.Len > fileSize) {
 			return false
@@ -261,18 +261,20 @@ func (f *finder) ptsAfter(off int64) (int64, int64, error) {
 		if err != nil {
 			return 0, 0, err
 		}
-		for i := 0; i+packetSize <= len(b); i += packetSize {
-			pk, ok := parsePacket(b[i:])
-			if !ok {
-				return 0, 0, fmt.Errorf("lost packet sync at byte %d", off+int64(i))
-			}
+		next := len(b) - 3*packetSize // where to read on from, past damage
+		for i := resync(b, 0); i >= 0; i = resync(b, i+packetSize) {
+			next = i + packetSize
+			pk, _ := parsePacket(b[i:])
 			if pk.pid == f.st.videoPID && pk.pusi {
 				if pts, ok := pesPTS(pk.payload); ok {
 					return pts, off + int64(i), nil
 				}
 			}
 		}
-		off += int64(len(b) / packetSize * packetSize)
+		if off+int64(len(b)) >= f.src.Size() {
+			return 0, 0, io.EOF
+		}
+		off += int64(max(next, packetSize))
 	}
 	return 0, 0, errors.New("no video timestamp found")
 }
@@ -376,11 +378,10 @@ func (f *finder) scan(off int64, t float64, keyframe bool) (int64, float64, erro
 		if err != nil {
 			return 0, 0, err
 		}
-		for i := 0; i+packetSize <= len(b); i += packetSize {
-			pk, ok := parsePacket(b[i:])
-			if !ok {
-				return 0, 0, fmt.Errorf("lost packet sync at byte %d", off+int64(i))
-			}
+		next := len(b) - 3*packetSize
+		for i := resync(b, 0); i >= 0; i = resync(b, i+packetSize) {
+			next = i + packetSize
+			pk, _ := parsePacket(b[i:])
 			if pk.pid != f.st.videoPID || !pk.pusi {
 				continue
 			}
@@ -392,7 +393,10 @@ func (f *finder) scan(off int64, t float64, keyframe bool) (int64, float64, erro
 				return off + int64(i), f.seconds(pts), nil
 			}
 		}
-		off += int64(len(b) / packetSize * packetSize)
+		if off+int64(len(b)) >= f.src.Size() {
+			return 0, 0, io.EOF
+		}
+		off += int64(max(next, packetSize))
 	}
 	return 0, 0, fmt.Errorf("nothing found within 16 MB after %.1fs", t)
 }
@@ -411,11 +415,10 @@ func (f *finder) leading(off int64, keyT float64) (from, to int64, err error) {
 		if err != nil {
 			return 0, 0, err
 		}
-		for i := 0; i+packetSize <= len(b); i += packetSize {
-			pk, ok := parsePacket(b[i:])
-			if !ok {
-				return 0, 0, fmt.Errorf("lost packet sync at byte %d", off+int64(i))
-			}
+		next := len(b) - 3*packetSize
+		for i := resync(b, 0); i >= 0; i = resync(b, i+packetSize) {
+			next = i + packetSize
+			pk, _ := parsePacket(b[i:])
 			if pk.pid != f.st.videoPID || !pk.pusi || off+int64(i) == start {
 				continue
 			}
@@ -434,7 +437,10 @@ func (f *finder) leading(off int64, keyT float64) (from, to int64, err error) {
 				from = at
 			}
 		}
-		off += int64(len(b) / packetSize * packetSize)
+		if off+int64(len(b)) >= f.src.Size() {
+			return from, to, nil
+		}
+		off += int64(max(next, packetSize))
 	}
 	return 0, 0, nil // no end in sight: leave the pictures in
 }

@@ -179,6 +179,10 @@ were finished and marked since the bridge started, one at a time, each a few hun
 already there is planned on first play, as before. It needs the state directory, and does nothing while no
 client has its commercials cut. `-plan-ahead=false` turns it off.
 
+A recording can hold damaged packets, cut short where the signal dropped, after which the packets are no longer
+every 188 bytes from the start. The bridge finds the packets again after each one, and passes the damaged bytes on
+as they are, as the DVR's own stream would.
+
 If the recording's video timestamps jump (a splice, an encoder restart), they no longer keep time with the DVR's
 marks, and cutting by them would remove the wrong stretches. The bridge notices, logs it once, and serves that
 recording whole.
