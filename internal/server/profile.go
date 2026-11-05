@@ -204,6 +204,9 @@ func (c *countWriter) Unwrap() http.ResponseWriter { return c.ResponseWriter }
 
 func (c *countWriter) FlushError() error { return http.NewResponseController(c.ResponseWriter).Flush() }
 
+// Flush makes it an http.Flusher, which copyFlushing looks for.
+func (c *countWriter) Flush() { c.FlushError() }
+
 // tracked lists a stream passed through while it runs, with the bytes sent.
 // Requests for headers, and the bridge's own reads, are not listed.
 func (s *Server) tracked(w http.ResponseWriter, r *http.Request, kind, client, what string) (http.ResponseWriter, func()) {

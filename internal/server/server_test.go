@@ -1308,3 +1308,28 @@ func TestOwnActivity(t *testing.T) {
 		t.Errorf("logs: %q", logs)
 	}
 }
+
+// A stream request is logged with the range asked for, and again when it ends
+// with the status and the size, so that a TV that will not play can be seen.
+func TestStreamLog(t *testing.T) {
+	var mu sync.Mutex
+	var logs []string
+	h := logRequests(func(f string, a ...any) { mu.Lock(); logs = append(logs, fmt.Sprintf(f, a...)); mu.Unlock() }, "t",
+		func(*http.Request) string { return "10.0.0.7" },
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if _, ok := w.(http.Flusher); !ok {
+				t.Error("the writer is not a Flusher")
+			}
+			w.WriteHeader(http.StatusPartialContent)
+			w.Write(make([]byte, 1024))
+		}))
+	req := httptest.NewRequest("GET", "/stream/adfree/7", nil)
+	req.Header.Set("Range", "bytes=0-1023")
+	req.Header.Set("User-Agent", "Lavf/58")
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(logs) != 2 || logs[0] != "http: GET /stream/adfree/7 bytes=0-1023 Lavf/58 from 10.0.0.7" || !strings.HasPrefix(logs[1], "http: GET /stream/adfree/7 bytes=0-1023: 206, 1024 bytes in ") {
+		t.Errorf("logs: %q", logs)
+	}
+}

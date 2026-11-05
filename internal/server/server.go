@@ -5,6 +5,7 @@ package server
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -128,11 +129,77 @@ func logRequests(logf func(string, ...any), version string, who func(*http.Reque
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Server", serverHeader(version))
 		// The settings page polls every few seconds and would drown the rest.
-		if p := r.URL.Path; !strings.HasPrefix(p, "/ctl/") && !strings.HasPrefix(p, "/api/") && !strings.HasPrefix(p, "/icons/") && p != "/" {
-			logf("http: %s %s %s from %s", r.Method, r.URL.Path, r.Header.Get("User-Agent"), who(r))
+		p := r.URL.Path
+		if strings.HasPrefix(p, "/ctl/") || strings.HasPrefix(p, "/api/") || strings.HasPrefix(p, "/icons/") || p == "/" {
+			h.ServeHTTP(w, r)
+			return
 		}
-		h.ServeHTTP(w, r)
+		if !strings.HasPrefix(p, "/stream/") {
+			logf("http: %s %s %s from %s", r.Method, p, r.Header.Get("User-Agent"), who(r))
+			h.ServeHTTP(w, r)
+			return
+		}
+		// A stream: what part was asked for, and how it went, which is what
+		// tells why a TV does not play something.
+		rg := r.Header.Get("Range")
+		if rg == "" {
+			rg = "whole"
+		}
+		logf("http: %s %s %s %s from %s", r.Method, p, rg, r.Header.Get("User-Agent"), who(r))
+		sw := &statusWriter{ResponseWriter: w}
+		start := time.Now()
+		h.ServeHTTP(sw, r)
+		if sw.status == 0 {
+			sw.status = http.StatusOK
+		}
+		how := ""
+		if err := r.Context().Err(); err != nil {
+			how = ", the client hung up"
+		}
+		logf("http: %s %s %s: %d, %s in %s%s", r.Method, p, rg, sw.status, sizeOf(sw.n), time.Since(start).Round(time.Millisecond), how)
 	})
+}
+
+// statusWriter notes the status and the bytes of a response.
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+	n      int64
+}
+
+func (w *statusWriter) WriteHeader(code int) {
+	if w.status == 0 {
+		w.status = code
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *statusWriter) Write(b []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	n, err := w.ResponseWriter.Write(b)
+	w.n += int64(n)
+	return n, err
+}
+
+func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (w *statusWriter) FlushError() error {
+	return http.NewResponseController(w.ResponseWriter).Flush()
+}
+
+func (w *statusWriter) Flush() { w.FlushError() }
+
+// sizeOf is a byte count for the log.
+func sizeOf(n int64) string {
+	switch {
+	case n < 10<<10:
+		return fmt.Sprintf("%d bytes", n)
+	case n < 10<<20:
+		return fmt.Sprintf("%d KB", n>>10)
+	}
+	return fmt.Sprintf("%d MB", n>>20)
 }
 
 func serveXML(body string) http.HandlerFunc {
