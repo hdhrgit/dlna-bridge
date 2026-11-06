@@ -40,9 +40,17 @@ const (
 	SeekTime = "time"
 )
 
+// Playbacks say whether where a client leaves a recording, and that it played
+// one to the end, go to the DVR.
+const (
+	PlaybackShare = "share" // the DVR is told, so the Channels apps resume there too
+	PlaybackKeep  = "keep"  // the DVR is not told
+)
+
 type Profile struct {
 	Mode      string    `json:"mode"`
 	Ads       string    `json:"ads"`
+	Playback  string    `json:"playback"`
 	Seek      string    `json:"seek"`
 	Transcode Transcode `json:"transcode"`
 }
@@ -118,6 +126,9 @@ func (c *Config) Fill() {
 		if p.Ads == "" {
 			p.Ads = AdsCut
 		}
+		if p.Playback == "" {
+			p.Playback = PlaybackShare
+		}
 		if p.Seek == "" {
 			p.Seek = SeekBytes
 		}
@@ -147,6 +158,11 @@ func (p Profile) validate() error {
 	case AdsCut, AdsKeep:
 	default:
 		return fmt.Errorf("ads %q is not cut or keep", p.Ads)
+	}
+	switch p.Playback {
+	case "", PlaybackShare, PlaybackKeep:
+	default:
+		return fmt.Errorf("playback %q is not share or keep", p.Playback)
 	}
 	switch p.Seek {
 	case "", SeekBytes, SeekTime: // empty is bytes, from a file older than the setting

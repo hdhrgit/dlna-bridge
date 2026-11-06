@@ -297,5 +297,7 @@ func (s *Server) adFreeRecording(w http.ResponseWriter, r *http.Request, id stri
 	w.Header().Set("Content-Type", videoMIME)
 	w.Header().Set("TransferMode.DLNA.ORG", "Streaming")
 	w.Header().Set("ContentFeatures.DLNA.ORG", recFeatures)
-	http.ServeContent(w, r, "", time.Time{}, cf)
+	bc, began := &byteCounter{ResponseWriter: w}, time.Now()
+	http.ServeContent(bc, r, "", time.Time{}, cf)
+	s.streamPosition(r, f, true, rangeStart(r), bc.n, plan.Size, began)
 }

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"dlna/internal/config"
 	"dlna/internal/dvr"
@@ -51,7 +53,12 @@ func (s *Server) streamRecording(w http.ResponseWriter, r *http.Request) {
 	if prof.Mode != config.ModeTranscode {
 		tw, done := s.tracked(w, r, "recording", name, s.whatRecording(r, id))
 		defer done()
-		s.proxy(tw, r, dvr.RecordingPath(id), recFeatures)
+		bc, began := &byteCounter{ResponseWriter: tw}, time.Now()
+		s.proxy(bc, r, dvr.RecordingPath(id), recFeatures)
+		// The TV has usually hung up by now, which ends r's context.
+		if f, found, err := s.cfg.DVR.Recording(context.WithoutCancel(r.Context()), id); err == nil && found {
+			s.streamPosition(r, f, false, rangeStart(r), bc.n, f.FileSize, began)
+		}
 		return
 	}
 	var length float64 // for the answer to a time seek

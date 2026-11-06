@@ -55,6 +55,7 @@ type Recording struct {
 	Duration     float64    `json:"Duration"`     // seconds
 	CreatedAt    int64      `json:"CreatedAt"`    // Unix seconds; see Created
 	PlaybackTime float64    `json:"PlaybackTime"` // seconds watched in the Channels apps
+	Watched      bool       `json:"Watched"`
 	FileSize     int64      `json:"FileSize"`
 	// Commercials are the breaks the DVR found: start, end, start, end... in
 	// seconds. Empty until the recording is processed.
@@ -390,6 +391,39 @@ func (c *Client) ForgetRecordings() {
 
 // ForgetGuide drops the cached shows on now, so that the next ask fetches them.
 func (c *Client) ForgetGuide() { c.now.forget() }
+
+// SetPlayback saves where a recording was left, in seconds into the
+// recording, for the Channels apps to resume from; 0 clears it.
+func (c *Client) SetPlayback(ctx context.Context, id string, sec int) error {
+	return c.put(ctx, fmt.Sprintf("/dvr/files/%s/playback_time/%d", url.PathEscape(id), sec))
+}
+
+// SetWatched marks a recording watched, or not.
+func (c *Client) SetWatched(ctx context.Context, id string, watched bool) error {
+	verb := "unwatch"
+	if watched {
+		verb = "watch"
+	}
+	return c.put(ctx, "/dvr/files/"+url.PathEscape(id)+"/"+verb)
+}
+
+func (c *Client) put(ctx context.Context, path string) error {
+	req, err := http.NewRequestWithContext(ctx, "PUT", c.Base.String()+path, nil)
+	if err != nil {
+		return err
+	}
+	c.SetAgent(req)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("DVR %s: %s", path, resp.Status)
+	}
+	c.files.forget()
+	return nil
+}
 
 // Event is one line of the DVR's event stream: files.created, files.updated,
 // files.deleted, groups.updated, activities.set, hello...

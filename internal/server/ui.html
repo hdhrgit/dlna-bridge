@@ -94,7 +94,8 @@ function profileForm(p, rerender) {
   const box = el('div');
   box.append(el('div', { class: 'grid' },
     field('Streams', sel(p, 'mode', [['direct', 'Direct from the DVR'], ['proxy', 'Through the bridge'], ['transcode', 'Converted (ffmpeg)']], rerender)),
-    field('Commercials', sel(p, 'ads', [['cut', 'Cut out'], ['keep', 'Play (pass through)']], rerender))));
+    field('Commercials', sel(p, 'ads', [['cut', 'Cut out'], ['keep', 'Play (pass through)']], rerender)),
+    field('Resume and watched', sel(p, 'playback', [['share', 'Shared with the DVR'], ['keep', 'Kept here']]))));
   if (p.ads === 'cut' || p.mode === 'transcode') {
     if (!p.seek || p.seek === 'none') p.seek = 'bytes';
     const bytes = p.mode === 'transcode' ? 'By bytes: converted recordings do not seek' : 'By bytes: every TV, starts after the cuts are worked out';

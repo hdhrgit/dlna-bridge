@@ -25,6 +25,7 @@ type object struct {
 	ChannelNr   string
 	ChannelName string
 	Bookmark    int // seconds; Samsung TVs offer to resume from here
+	Watched     bool
 }
 
 // DLNA flags: streaming transfer mode, background transfer, connection stall
@@ -89,6 +90,14 @@ func didl(objs []object) string {
 		}
 		if o.Bookmark > 0 {
 			fmt.Fprintf(&b, "<sec:dcmInfo>CREATIONDATE=%d,BM=%d</sec:dcmInfo>", o.Date.Unix(), o.Bookmark)
+			b.WriteString("<upnp:lastPlaybackPosition>" + duration(float64(o.Bookmark)) + "</upnp:lastPlaybackPosition>")
+		}
+		if o.Class == classRecorded {
+			n := 0
+			if o.Watched {
+				n = 1
+			}
+			fmt.Fprintf(&b, "<upnp:playbackCount>%d</upnp:playbackCount>", n)
 		}
 		b.WriteString(`<res protocolInfo="` + escape(o.Protocol) + `"`)
 		if o.Duration > 0 {

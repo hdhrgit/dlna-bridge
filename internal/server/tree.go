@@ -388,7 +388,11 @@ func (s *Server) sourceItems(ctx context.Context, v view, escaped string) ([]obj
 // profile says so and the DVR has marked them.
 func (s *Server) recordingObject(v view, f dvr.Recording, id, parent string) object {
 	cut := v.prof.Ads == config.AdsCut && s.adFree(f)
-	bm := s.cfg.Bookmarks.Get("rec/" + string(f.ID))
+	bm := 0
+	if v.prof.Playback == config.PlaybackKeep {
+		// Kept here only; with sync, the DVR holds it, for every player.
+		bm = s.cfg.Bookmarks.Get("rec/" + string(f.ID))
+	}
 	if bm == 0 && f.PlaybackTime > 0 {
 		// Where the Channels apps left off, on the TV's clock.
 		if cut {
@@ -419,7 +423,7 @@ func (s *Server) recordingObject(v view, f dvr.Recording, id, parent string) obj
 	o := object{
 		ID: id, Parent: parent, Title: recordingTitle(f), Class: classRecorded,
 		URL: res.url, Protocol: res.protocol, Duration: f.Duration, Art: s.artURL(v, img), Description: f.Airing.Summary,
-		Date: f.Created(), Bookmark: bm,
+		Date: f.Created(), Bookmark: bm, Watched: f.Watched,
 	}
 	if cut {
 		o.Duration = f.AdFree(-1)

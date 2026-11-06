@@ -75,7 +75,8 @@ func newTestServer(t *testing.T, proxy bool) *httptest.Server {
 	if proxy {
 		mode = config.ModeProxy
 	}
-	return newServerWith(t, config.Config{Default: config.Profile{Mode: mode, Ads: config.AdsCut}})
+	// Resume points kept here: the fake DVR takes no writes.
+	return newServerWith(t, config.Config{Default: config.Profile{Mode: mode, Ads: config.AdsCut, Playback: config.PlaybackKeep}})
 }
 
 func newServerWith(t *testing.T, start config.Config) *httptest.Server {
@@ -1909,5 +1910,71 @@ func TestSearch(t *testing.T) {
 	_, body = soap(t, s.URL, "ContentDirectory", "GetSearchCapabilities", "")
 	if !strings.Contains(body, "dc:title") {
 		t.Errorf("caps: %s", body)
+	}
+}
+
+// With playback sync, a Samsung bookmark and a stream that stopped part-way
+// tell the DVR where it was left (in the recording's time, for a cut one), and
+// one played to the end is marked watched; probes tell it nothing. The listing
+// carries the watched state and position.
+func TestPlaybackSync(t *testing.T) {
+	var mu sync.Mutex
+	var puts []string
+	files := `[{"ID":"17","GroupID":"g1","Airing":{"Title":"Nova"},"Duration":3600,"CreatedAt":1793500000,"PlaybackTime":120,"Watched":true,"Completed":true,"FileSize":3600000000,"Processed":true,"Commercials":[0,600]}]`
+	d := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "PUT" {
+			mu.Lock()
+			puts = append(puts, r.URL.Path)
+			mu.Unlock()
+			return
+		}
+		switch r.URL.Path {
+		case "/dvr/files":
+			io.WriteString(w, files)
+		case "/dvr/groups":
+			io.WriteString(w, `[]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer d.Close()
+	c, _ := dvr.New(d.URL)
+	srv := New(Config{DVR: c, Settings: mustSettings(t, config.Config{Default: config.Profile{Mode: config.ModeProxy, Ads: config.AdsCut}})})
+	s := httptest.NewServer(srv.Handler())
+	defer s.Close()
+	got := func() []string { mu.Lock(); defer mu.Unlock(); p := puts; puts = nil; return p }
+
+	// A Samsung stops 10 minutes into the cut version: 20 minutes into the recording.
+	soap(t, s.URL, "ContentDirectory", "X_SetBookmark", "<CategoryType>0</CategoryType><RID>0</RID><ObjectID>recent/17</ObjectID><PosSecond>600</PosSecond>")
+	if p := got(); len(p) != 1 || p[0] != "/dvr/files/17/playback_time/1200" {
+		t.Errorf("bookmark: %v", p)
+	}
+	f, _, _ := c.Recording(context.Background(), "17")
+	r := httptest.NewRequest("GET", "/stream/rec/17", nil)
+	began := time.Now().Add(-time.Minute)
+	srv.streamPosition(r, f, false, 0, 1<<20, f.FileSize, began)        // a probe: too little
+	srv.streamPosition(r, f, false, 0, 100<<20, f.FileSize, time.Now()) // too short
+	if p := got(); len(p) != 0 {
+		t.Errorf("probes told the DVR %v", p)
+	}
+	srv.streamPosition(r, f, false, 1800000000, 100<<20, f.FileSize, began) // stopped at about 30 min
+	if p := got(); len(p) != 1 || !strings.HasPrefix(p[0], "/dvr/files/17/playback_time/18") {
+		t.Errorf("stopped part-way: %v", p)
+	}
+	srv.streamPosition(r, f, false, 3500000000, 100<<20, f.FileSize, began) // to the end
+	if p := got(); len(p) != 1 || p[0] != "/dvr/files/17/watch" {
+		t.Errorf("to the end: %v", p)
+	}
+	_, raw := soap(t, s.URL, "ContentDirectory", "Browse", "<ObjectID>rec/17</ObjectID><BrowseFlag>BrowseMetadata</BrowseFlag>")
+	if !strings.Contains(raw, "playbackCount&gt;1&lt;") {
+		t.Errorf("watched state not listed: %s", raw)
+	}
+	// A client set to keep it here tells the DVR nothing.
+	keep, _ := config.Open("", config.Config{Default: config.Profile{Mode: config.ModeProxy, Ads: config.AdsCut, Playback: config.PlaybackKeep}})
+	srv.cfg.Settings = keep
+	srv.streamPosition(r, f, false, 1800000000, 100<<20, f.FileSize, began)
+	soap(t, s.URL, "ContentDirectory", "X_SetBookmark", "<CategoryType>0</CategoryType><RID>0</RID><ObjectID>rec/17</ObjectID><PosSecond>600</PosSecond>")
+	if p := got(); len(p) != 0 {
+		t.Errorf("kept here, but told the DVR %v", p)
 	}
 }

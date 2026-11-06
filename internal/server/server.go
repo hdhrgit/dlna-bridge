@@ -288,6 +288,7 @@ func (s *Server) contentDirectory(w http.ResponseWriter, r *http.Request) {
 		if err := s.cfg.Bookmarks.Set(bookmarkID(a.Args["ObjectID"]), pos); err != nil {
 			s.cfg.Logf("bookmark: %v", err)
 		}
+		s.bookmarkToDVR(r, bookmarkID(a.Args["ObjectID"]), pos)
 		writeResponse(w, cdService, a.Name, nil)
 	default:
 		writeFault(w, errInvalidAction)
