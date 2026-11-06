@@ -1876,3 +1876,38 @@ func TestConvertedNoTimeSeek(t *testing.T) {
 		t.Errorf("time seek from a bytes client: %d", resp.StatusCode)
 	}
 }
+
+// Search finds items by title and class under a container, each once from the
+// top, and refuses criteria it cannot read.
+func TestSearch(t *testing.T) {
+	s := newTestServer(t, false)
+	search := func(container, crit string) (int, string) {
+		return soap(t, s.URL, "ContentDirectory", "Search", "<ContainerID>"+container+"</ContainerID><SearchCriteria>"+escape(crit)+"</SearchCriteria><Filter>*</Filter><StartingIndex>0</StartingIndex><RequestedCount>0</RequestedCount><SortCriteria></SortCriteria>")
+	}
+	code, body := search("0", `dc:title contains "nova" and upnp:class derivedfrom "object.item.videoItem"`)
+	if code != 200 || !strings.Contains(body, "TotalMatches>2<") {
+		t.Errorf("nova: %d %s", code, body)
+	}
+	_, body = search("0", `upnp:class derivedfrom "object.item.videoItem.videoBroadcast"`)
+	if !strings.Contains(body, "TotalMatches>3<") { // the channels, once each
+		t.Errorf("channels: %s", body)
+	}
+	_, body = search("0", `dc:title contains "Caine" or dc:title contains "reuters"`)
+	if !strings.Contains(body, "TotalMatches>2<") {
+		t.Errorf("or: %s", body)
+	}
+	_, body = search("movies", "*")
+	if !strings.Contains(body, "TotalMatches>1<") {
+		t.Errorf("all in Movies: %s", body)
+	}
+	if code, body := search("0", `dc:title contains`); code != 500 || !strings.Contains(body, "<errorCode>708</errorCode>") {
+		t.Errorf("bad criteria: %d %s", code, body)
+	}
+	if code, body := search("nope", "*"); code != 500 || !strings.Contains(body, "<errorCode>710</errorCode>") {
+		t.Errorf("no such container: %d %s", code, body)
+	}
+	_, body = soap(t, s.URL, "ContentDirectory", "GetSearchCapabilities", "")
+	if !strings.Contains(body, "dc:title") {
+		t.Errorf("caps: %s", body)
+	}
+}

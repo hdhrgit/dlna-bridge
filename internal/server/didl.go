@@ -59,7 +59,7 @@ func didl(objs []object) string {
 	b.WriteString(didlOpen)
 	for _, o := range objs {
 		if o.Folder {
-			fmt.Fprintf(&b, `<container id="%s" parentID="%s" restricted="1" searchable="0" childCount="%d">`, escape(o.ID), escape(o.Parent), o.Children)
+			fmt.Fprintf(&b, `<container id="%s" parentID="%s" restricted="1" searchable="1" childCount="%d">`, escape(o.ID), escape(o.Parent), o.Children)
 			b.WriteString("<dc:title>" + escape(o.Title) + "</dc:title>")
 			b.WriteString("<upnp:class>object.container.storageFolder</upnp:class>")
 			if o.Art != "" {

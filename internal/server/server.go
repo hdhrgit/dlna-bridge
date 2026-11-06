@@ -255,7 +255,11 @@ func (s *Server) contentDirectory(w http.ResponseWriter, r *http.Request) {
 		writeFault(w, errInvalidAction)
 		return
 	}
-	s.cfg.Logf("soap: %s %s %s from %s", a.Name, a.Args["BrowseFlag"], a.Args["ObjectID"], s.who(r))
+	if a.Name == "Search" {
+		s.cfg.Logf("soap: Search %s in %s from %s", a.Args["SearchCriteria"], a.Args["ContainerID"], s.who(r))
+	} else {
+		s.cfg.Logf("soap: %s %s %s from %s", a.Name, a.Args["BrowseFlag"], a.Args["ObjectID"], s.who(r))
+	}
 	switch a.Name {
 	case "Browse":
 		out, err := s.browse(r.Context(), s.viewOf(r), a.Args)
@@ -264,8 +268,15 @@ func (s *Server) contentDirectory(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeResponse(w, cdService, a.Name, out)
+	case "Search":
+		out, err := s.search(r.Context(), s.viewOf(r), a.Args)
+		if err != nil {
+			s.fault(w, a, err)
+			return
+		}
+		writeResponse(w, cdService, a.Name, out)
 	case "GetSearchCapabilities":
-		writeResponse(w, cdService, a.Name, [][2]string{{"SearchCaps", ""}})
+		writeResponse(w, cdService, a.Name, [][2]string{{"SearchCaps", searchCaps}})
 	case "GetSortCapabilities":
 		writeResponse(w, cdService, a.Name, [][2]string{{"SortCaps", ""}})
 	case "GetSystemUpdateID":
