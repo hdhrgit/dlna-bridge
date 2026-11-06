@@ -42,7 +42,7 @@ func (s *Server) streamLive(w http.ResponseWriter, r *http.Request) {
 		// sending the full one for us to decode.
 		input = s.cfg.DVR.SmallStreamURL(dev, number, evenCeil(t.MaxHeight), t.VideoKbps*2+t.AudioKbps)
 	}
-	s.transcode(w, r, t, name, number+" "+ch.Name, input, true)
+	s.transcode(w, r, t, name, number+" "+ch.Name, input, true, 0)
 }
 
 func (s *Server) streamRecording(w http.ResponseWriter, r *http.Request) {
@@ -54,7 +54,11 @@ func (s *Server) streamRecording(w http.ResponseWriter, r *http.Request) {
 		s.proxy(tw, r, dvr.RecordingPath(id), recFeatures)
 		return
 	}
-	s.transcode(w, r, prof.Transcode, name, "recording "+id, s.cfg.DVR.Base.String()+dvr.RecordingPath(id), false)
+	var length float64 // for the answer to a time seek
+	if f, found, err := s.cfg.DVR.Recording(r.Context(), id); err == nil && found {
+		length = f.Duration
+	}
+	s.transcode(w, r, prof.Transcode, name, "recording "+id, s.cfg.DVR.Base.String()+dvr.RecordingPath(id), false, length)
 }
 
 func (s *Server) proxy(w http.ResponseWriter, r *http.Request, dvrPath, features string) {

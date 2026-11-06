@@ -199,14 +199,79 @@ func (s *Server) streamAdFree(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if r.URL.Query().Get("raw") == "" {
 		if name, prof := s.profileFor(r); prof.Mode == config.ModeTranscode {
-			s.transcode(w, r, prof.Transcode, name, "recording "+id, s.cfg.SelfURL+"/stream/adfree/"+url.PathEscape(id)+"?raw=1", false)
+			var length float64 // without the breaks, as the seconds of a seek are
+			if f, found, err := s.cfg.DVR.Recording(r.Context(), id); err == nil && found {
+				length = f.AdFree(-1)
+			}
+			s.transcode(w, r, prof.Transcode, name, "recording "+id, s.cfg.SelfURL+"/stream/adfree/"+url.PathEscape(id)+"?raw=1", false, length)
 			return
 		}
 	}
-	name, _ := s.profileFor(r)
+	name, prof := s.profileFor(r)
 	tw, done := s.tracked(w, r, "recording", name, s.whatRecording(r, id)+" (ads cut)")
 	defer done()
+	if prof.Seek == config.SeekTime && r.URL.Query().Get("raw") == "" {
+		s.adFreeByTime(tw, r, id)
+		return
+	}
 	s.adFreeRecording(tw, r, id)
+}
+
+// adFreeByTime serves a recording without its breaks to a client that seeks by
+// time: from the start, or from the time in TimeSeekRange.dlna.org, with no
+// length. The first bytes go out after a few reads of the recording; each
+// break is found just before it is reached.
+func (s *Server) adFreeByTime(w http.ResponseWriter, r *http.Request, id string) {
+	f, found, err := s.cfg.DVR.Recording(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	if !found {
+		http.NotFound(w, r)
+		return
+	}
+	if rg := r.Header.Get("Range"); rg != "" && rg != "bytes=0-" {
+		// It has no byte offsets; DLNA's answer to a seek that is not offered.
+		http.Error(w, "this stream seeks by time (TimeSeekRange.dlna.org), not by bytes", http.StatusNotAcceptable)
+		return
+	}
+	total := f.AdFree(-1)
+	start := 0.0
+	seek := r.Header.Get("TimeSeekRange.dlna.org")
+	if seek != "" {
+		var ok bool
+		if start, ok = parseNPT(seek); !ok {
+			http.Error(w, "bad TimeSeekRange.dlna.org", http.StatusBadRequest)
+			return
+		}
+		if total > 0 && start >= total {
+			http.Error(w, "seek past the end", http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
+	}
+	w.Header().Set("Content-Type", videoMIME)
+	w.Header().Set("TransferMode.DLNA.ORG", "Streaming")
+	w.Header().Set("ContentFeatures.DLNA.ORG", timeFeatures)
+	if seek != "" {
+		w.Header().Set("TimeSeekRange.dlna.org", "npt="+duration(start)+"-"+duration(total)+"/"+duration(total))
+	}
+	if r.Method == http.MethodHead {
+		return
+	}
+	file := s.cfg.DVR.File(f)
+	logf := func(format string, a ...any) { s.cfg.Logf("recording %s: "+format, append([]any{id}, a...)...) }
+	st, err := cut.NewStream(r.Context(), file, f.Commercials, f.RecordingTime(start), file.Open, logf)
+	if err != nil {
+		if r.Context().Err() == nil {
+			logf("cannot start at %s: %v", duration(start), err)
+			http.Error(w, err.Error(), http.StatusBadGateway)
+		}
+		return
+	}
+	defer st.Close()
+	w.WriteHeader(http.StatusOK)
+	copyFlushing(w, st)
 }
 
 // adFreeRecording serves a recording without its breaks. If the cut list

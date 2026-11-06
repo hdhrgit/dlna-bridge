@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -86,15 +87,46 @@ func ffmpegArgs(t config.Transcode, input string, liveHLS bool, userAgent string
 }
 
 // transcode runs ffmpeg for one client and streams what it makes. The stream
-// has no length and does not seek, but a recording starts at ?t=<seconds> if
-// asked. It stops when the client goes. A live channel is kept near its live
-// edge: a client that reads slower than it plays skips ahead rather than
-// falling behind.
-func (s *Server) transcode(w http.ResponseWriter, r *http.Request, t config.Transcode, client, what, input string, live bool) {
+// has no length, so no byte offsets; a recording for a client set to seek by
+// time starts where it asks with a DLNA time seek (TimeSeekRange.dlna.org).
+// length, when known, is the recording's in seconds, for the answer. It stops
+// when the client goes. A live channel is kept near its live edge: a client
+// that reads slower than it plays skips ahead rather than falling behind.
+func (s *Server) transcode(w http.ResponseWriter, r *http.Request, t config.Transcode, client, what, input string, live bool, length float64) {
 	w.Header().Set("Content-Type", tsMIME)
 	w.Header().Set("Cache-Control", "no-cache, no-store")
 	w.Header().Set("TransferMode.DLNA.ORG", "Streaming")
-	w.Header().Set("ContentFeatures.DLNA.ORG", "DLNA.ORG_OP=00;DLNA.ORG_CI=1;"+dlnaFlags)
+	byTime := false
+	if _, prof := s.profileFor(r); !live && prof.Seek == config.SeekTime {
+		byTime = true
+	}
+	features := transcodeFeatures
+	if byTime {
+		features = transcodeTimeFeatures
+	}
+	w.Header().Set("ContentFeatures.DLNA.ORG", features)
+	start := 0.0
+	if seek := r.Header.Get("TimeSeekRange.dlna.org"); seek != "" {
+		if !byTime {
+			// DLNA's answer to a seek that was not offered.
+			http.Error(w, "this stream does not seek", http.StatusNotAcceptable)
+			return
+		}
+		var ok bool
+		if start, ok = parseNPT(seek); !ok || start > maxStart {
+			http.Error(w, "bad TimeSeekRange.dlna.org", http.StatusBadRequest)
+			return
+		}
+		if length > 0 && start >= length {
+			http.Error(w, "seek past the end", http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
+		ans := "npt=" + duration(start) + "-"
+		if length > 0 {
+			ans += duration(length) + "/" + duration(length)
+		}
+		w.Header().Set("TimeSeekRange.dlna.org", ans)
+	}
 	if r.Method == http.MethodHead {
 		return
 	}
@@ -109,10 +141,6 @@ func (s *Server) transcode(w http.ResponseWriter, r *http.Request, t config.Tran
 	w = &countWriter{w, s.jobs.counter(id)}
 
 	started := time.Now()
-	start := 0.0
-	if !live {
-		start = startAt(r)
-	}
 	if start > 0 {
 		what += fmt.Sprintf(" from %s", time.Duration(start*float64(time.Second)).Round(time.Second))
 	}
@@ -134,17 +162,30 @@ func (s *Server) transcode(w http.ResponseWriter, r *http.Request, t config.Tran
 	}
 }
 
-// maxStart is the furthest ?t= is taken: longer than any recording.
+// maxStart is the furthest a seek is taken: longer than any recording.
 const maxStart = 48 * 3600
 
-// startAt is where a client asks a recording to start, from ?t=<seconds>; 0 for
-// none, or for anything that isn't a number of seconds within maxStart.
-func startAt(r *http.Request) float64 {
-	t, err := strconv.ParseFloat(r.URL.Query().Get("t"), 64)
-	if err != nil || !(t > 0 && t <= maxStart) {
-		return 0
+// parseNPT reads the start of a DLNA time range, "npt=600.5-" or
+// "npt=0:10:00.500-1:00:00", in seconds.
+func parseNPT(h string) (float64, bool) {
+	v, ok := strings.CutPrefix(strings.TrimSpace(h), "npt=")
+	if !ok {
+		return 0, false
 	}
-	return t
+	v, _, _ = strings.Cut(v, "-")
+	parts := strings.Split(strings.TrimSpace(v), ":")
+	if len(parts) > 3 {
+		return 0, false
+	}
+	var sec float64
+	for _, p := range parts {
+		n, err := strconv.ParseFloat(p, 64)
+		if err != nil || n < 0 || math.IsInf(n, 0) || math.IsNaN(n) {
+			return 0, false
+		}
+		sec = sec*60 + n
+	}
+	return sec, true
 }
 
 // startLimit is how long ffmpeg may take to give its first bytes. The DVR's

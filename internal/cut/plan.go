@@ -60,6 +60,45 @@ const probe = 128 << 10
 // Make finds where each break starts and ends in the file. breaks is the DVR's
 // list: start, end, start, end... in seconds from the start of the recording.
 func Make(ctx context.Context, src Source, breaks []float64) (*Plan, error) {
+	pl, err := newPlanner(ctx, src, breaks)
+	if err != nil {
+		return nil, err
+	}
+	p := &Plan{videoPID: pl.st.videoPID}
+	for {
+		parts, kept, err := pl.next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		p.Parts = append(p.Parts, parts...)
+		p.Kept = append(p.Kept, kept)
+	}
+	for _, part := range p.Parts {
+		p.Size += part.Len
+	}
+	return p, nil
+}
+
+// planner finds the breaks one after another, so that a stream can be sent
+// while the later ones are still to be found.
+type planner struct {
+	f      *finder
+	st     streams
+	breaks []float64
+	i      int // the next break
+	size   int64
+
+	pos              int64   // the start of the part being kept
+	posT             float64 // its time in the recording
+	shift            int64   // the length of the breaks so far, in 90 kHz ticks
+	dropFrom, dropTo int64   // the leading pictures after pos
+	done             bool
+}
+
+func newPlanner(ctx context.Context, src Source, breaks []float64) (*planner, error) {
 	if len(breaks)%2 != 0 {
 		return nil, fmt.Errorf("odd list of commercial marks (%d)", len(breaks))
 	}
@@ -88,62 +127,124 @@ func Make(ctx context.Context, src Source, breaks []float64) (*Plan, error) {
 			f.end = f.seconds(pts)
 		}
 	}
-	p := &Plan{videoPID: st.videoPID}
-	pos, posT := int64(0), 0.0 // the start of the part being kept
-	var shift int64            // the length of the breaks so far, in 90 kHz ticks
-	var dropFrom, dropTo int64 // the leading pictures after pos
-	for i := 0; i < len(breaks); i += 2 {
-		from, to := breaks[i], breaks[i+1]
-		if to <= from || from < posT {
+	return &planner{f: f, st: st, breaks: breaks, size: size}, nil
+}
+
+// next finds the next part to keep, and returns it with the PAT and PMT in
+// front when it follows a cut, and its time range in the recording (-1 for an
+// end at the end). After the last part it returns io.EOF.
+func (pl *planner) next() ([]Part, [2]float64, error) {
+	if pl.done {
+		return nil, [2]float64{}, io.EOF
+	}
+	f := pl.f
+	for pl.i < len(pl.breaks) {
+		from, to := pl.breaks[pl.i], pl.breaks[pl.i+1]
+		if to <= from || from < pl.posT {
+			pl.i += 2
 			continue
 		}
 		out, outT, err := f.packetAt(from)
 		if err != nil {
-			return nil, fmt.Errorf("break at %.1fs: %w", from, err)
+			return nil, [2]float64{}, fmt.Errorf("break at %.1fs: %w", from, err)
 		}
 		if outT-from > maxOutSlack {
-			return nil, fmt.Errorf("break at %.1fs: the video there is at %.1fs: %w", from, outT, ErrTimeline)
+			return nil, [2]float64{}, fmt.Errorf("break at %.1fs: the video there is at %.1fs: %w", from, outT, ErrTimeline)
 		}
 		in, inT, err := f.keyframeAfter(to)
 		if errors.Is(err, io.EOF) {
-			in, inT = size, to // the break runs to the end
+			in, inT = pl.size, to // the break runs to the end
 		} else if err != nil {
-			return nil, fmt.Errorf("end of break at %.1fs: %w", to, err)
+			return nil, [2]float64{}, fmt.Errorf("end of break at %.1fs: %w", to, err)
 		} else if inT-to > maxInSlack {
-			return nil, fmt.Errorf("end of break at %.1fs: the next keyframe is at %.1fs: %w", to, inT, ErrTimeline)
+			return nil, [2]float64{}, fmt.Errorf("end of break at %.1fs: the next keyframe is at %.1fs: %w", to, inT, ErrTimeline)
 		}
-		if out > pos {
-			if pos > 0 {
-				p.Parts = append(p.Parts, Part{Data: append(append([]byte(nil), st.pat...), st.pmt...)})
-			}
-			p.Parts = append(p.Parts, Part{Off: pos, Len: out - pos, Shift: shift, DropFrom: dropFrom, DropTo: dropTo})
-			p.Kept = append(p.Kept, [2]float64{posT, from})
-		}
-		if in < size {
-			shift += int64(math.Round((inT - outT) * 90000))
-		}
-		pos, posT = in, inT
-		dropFrom, dropTo = 0, 0
-		if in < size {
+		var dropFrom, dropTo int64
+		if in < pl.size {
 			if dropFrom, dropTo, err = f.leading(in, inT); err != nil {
-				return nil, fmt.Errorf("after the break at %.1fs: %w", from, err)
+				return nil, [2]float64{}, fmt.Errorf("after the break at %.1fs: %w", from, err)
 			}
 		}
-	}
-	if pos < size {
-		if pos > 0 {
-			p.Parts = append(p.Parts, Part{Data: append(append([]byte(nil), st.pat...), st.pmt...)})
+		pl.i += 2
+		var parts []Part
+		kept := [2]float64{pl.posT, from}
+		if out > pl.pos {
+			parts = pl.part(out)
 		}
-		p.Parts = append(p.Parts, Part{Off: pos, Len: size - pos, Shift: shift, DropFrom: dropFrom, DropTo: dropTo})
-		p.Kept = append(p.Kept, [2]float64{posT, -1})
-	}
-	for i := range p.Parts {
-		if p.Parts[i].Data != nil {
-			p.Parts[i].Len = int64(len(p.Parts[i].Data))
+		if in < pl.size {
+			pl.shift += int64(math.Round((inT - outT) * 90000))
 		}
-		p.Size += p.Parts[i].Len
+		pl.pos, pl.posT = in, inT
+		pl.dropFrom, pl.dropTo = dropFrom, dropTo
+		if parts != nil {
+			return parts, kept, nil
+		}
 	}
-	return p, nil
+	pl.done = true
+	if pl.pos >= pl.size {
+		return nil, [2]float64{}, io.EOF
+	}
+	return pl.part(pl.size), [2]float64{pl.posT, -1}, nil
+}
+
+// part is the recording from pos to end, as it is kept.
+func (pl *planner) part(end int64) []Part {
+	var parts []Part
+	if pl.pos > 0 {
+		d := append(append([]byte(nil), pl.st.pat...), pl.st.pmt...)
+		parts = append(parts, Part{Data: d, Len: int64(len(d))})
+	}
+	return append(parts, Part{Off: pl.pos, Len: end - pl.pos, Shift: pl.shift, DropFrom: pl.dropFrom, DropTo: pl.dropTo})
+}
+
+// rest is the recording from pos to the end with no more cuts, for when the
+// next break cannot be found.
+func (pl *planner) rest() []Part {
+	pl.done = true
+	if pl.pos >= pl.size {
+		return nil
+	}
+	return pl.part(pl.size)
+}
+
+// seek starts the planner at the first keyframe after t seconds into the
+// recording, past any break that keyframe falls in. The timestamps from there
+// are moved back by the DVR's marked length of the breaks before it.
+func (pl *planner) seek(t float64) error {
+	for {
+		off, kt, err := pl.f.keyframeAfter(t)
+		if errors.Is(err, io.EOF) {
+			pl.pos, pl.posT = pl.size, t
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		inBreak := false
+		for i := 0; i+1 < len(pl.breaks); i += 2 {
+			if from, to := pl.breaks[i], pl.breaks[i+1]; from <= kt && kt < to && to > t {
+				t, inBreak = to, true
+				break
+			}
+		}
+		if inBreak {
+			continue
+		}
+		var cut float64
+		for i := 0; i+1 < len(pl.breaks); i += 2 {
+			if from, to := pl.breaks[i], pl.breaks[i+1]; to > from && to <= kt {
+				cut += to - from
+			}
+		}
+		from, to, err := pl.f.leading(off, kt)
+		if err != nil {
+			return err
+		}
+		pl.pos, pl.posT = off, kt
+		pl.shift = int64(math.Round(cut * 90000))
+		pl.dropFrom, pl.dropTo = from, to
+		return nil
+	}
 }
 
 // planJSON is a Plan as kept on disk.

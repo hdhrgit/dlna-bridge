@@ -411,7 +411,11 @@ func (s *Server) recordingObject(v view, f dvr.Recording, id, parent string) obj
 	if cut {
 		bridge = "/stream/adfree/" + eid
 	}
-	res := s.resource(v, dvr.RecordingPath(string(f.ID)), bridge, nil, cut, recProtocol)
+	protocol := recProtocol
+	if cut && v.prof.Seek == config.SeekTime {
+		protocol = timeProtocol
+	}
+	res := s.resource(v, dvr.RecordingPath(string(f.ID)), bridge, nil, cut, protocol)
 	o := object{
 		ID: id, Parent: parent, Title: recordingTitle(f), Class: classRecorded,
 		URL: res.url, Protocol: res.protocol, Duration: f.Duration, Art: s.artURL(v, img), Description: f.Airing.Summary,
@@ -580,6 +584,9 @@ func (s *Server) resource(v view, dvrPath, bridgePath string, q url.Values, thro
 	}
 	switch {
 	case v.prof.Mode == config.ModeTranscode:
+		if v.prof.Seek == config.SeekTime && protocol != liveProtocol {
+			return resource{via(), transcodeTimeProtocol}
+		}
 		return resource{via(), transcodeProtocol}
 	case throughBridge || v.prof.Mode == config.ModeProxy:
 		return resource{via(), protocol}

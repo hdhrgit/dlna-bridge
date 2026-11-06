@@ -94,7 +94,13 @@ function profileForm(p, rerender) {
   const box = el('div');
   box.append(el('div', { class: 'grid' },
     field('Streams', sel(p, 'mode', [['direct', 'Direct from the DVR'], ['proxy', 'Through the bridge'], ['transcode', 'Converted (ffmpeg)']], rerender)),
-    field('Commercials', sel(p, 'ads', [['cut', 'Cut out'], ['keep', 'Play (pass through)']]))));
+    field('Commercials', sel(p, 'ads', [['cut', 'Cut out'], ['keep', 'Play (pass through)']], rerender))));
+  if (p.ads === 'cut' || p.mode === 'transcode') {
+    if (!p.seek || p.seek === 'none') p.seek = 'bytes';
+    const bytes = p.mode === 'transcode' ? 'By bytes: converted recordings do not seek' : 'By bytes: every TV, starts after the cuts are worked out';
+    box.append(el('div', { class: 'grid' },
+      field('Seeking in recordings', sel(p, 'seek', [['bytes', bytes], ['time', 'By time (DLNA time seek), if the TV supports it']]))));
+  }
   if (p.mode === 'transcode') {
     const t = p.transcode;
     box.append(el('div', { class: 'grid' },
@@ -205,7 +211,7 @@ async function load(keepEdits) {
   if (!keepEdits) { cfg = st.config; render(); } else renderSeen();
 }
 
-$('add').onclick = () => { cfg.clients.push({ name: 'New client', ips: [], user_agents: [], profile: { mode: 'transcode', ads: 'cut', transcode: JSON.parse(JSON.stringify(defaults)) } }); render(); $('clients').lastChild.scrollIntoView({ behavior: 'smooth' }); };
+$('add').onclick = () => { cfg.clients.push({ name: 'New client', ips: [], user_agents: [], profile: { mode: 'transcode', ads: 'cut', seek: 'bytes', transcode: JSON.parse(JSON.stringify(defaults)) } }); render(); $('clients').lastChild.scrollIntoView({ behavior: 'smooth' }); };
 $('max').oninput = e => cfg.max_transcodes = +e.target.value;
 $('recent').oninput = e => cfg.recent_hours = +e.target.value;
 $('save').onclick = async () => {

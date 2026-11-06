@@ -530,26 +530,18 @@ func TestFFmpegArgs(t *testing.T) {
 	}
 }
 
-// A recording asked for at ?t= starts there: an input seek, before -i. Without
-// it, or with a t that isn't a sensible number of seconds, it starts at the top.
+// A recording asked to start part-way gets an input seek, before -i; without a
+// start it begins at the top.
 func TestFFmpegStart(t *testing.T) {
 	tc := config.DefaultTranscode()
 	if args := strings.Join(ffmpegArgs(tc, "in", false, "", 90), " "); !strings.Contains(args, " -ss 90 -i in ") {
-		t.Errorf("t=90: %s", args)
+		t.Errorf("start 90: %s", args)
 	}
 	if args := strings.Join(ffmpegArgs(tc, "in", false, "", 12.5), " "); !strings.Contains(args, " -ss 12.5 -i in ") {
-		t.Errorf("t=12.5: %s", args)
+		t.Errorf("start 12.5: %s", args)
 	}
 	if args := strings.Join(ffmpegArgs(tc, "in", false, "", 0), " "); strings.Contains(args, "-ss") {
-		t.Errorf("no t: %s", args)
-	}
-	for q, want := range map[string]float64{
-		"": 0, "t=90": 90, "t=12.5": 12.5, "t=0": 0, "t=-5": 0, "t=abc": 0, "t=NaN": 0, "t=Inf": 0, "t=1e9": 0,
-	} {
-		r := httptest.NewRequest("GET", "/stream/rec/7?profile=esp32&"+q, nil)
-		if got := startAt(r); got != want {
-			t.Errorf("%q: %v, want %v", q, got, want)
-		}
+		t.Errorf("no start: %s", args)
 	}
 }
 
@@ -565,7 +557,7 @@ func TestTranscodeRetries(t *testing.T) {
 	settings, _ := config.Open("", config.Config{})
 	s := New(Config{FFmpeg: ff, Settings: settings})
 	w := httptest.NewRecorder()
-	s.transcode(w, httptest.NewRequest("GET", "/stream/live/1", nil), config.DefaultTranscode(), "Tiny", "1", "in", false)
+	s.transcode(w, httptest.NewRequest("GET", "/stream/live/1", nil), config.DefaultTranscode(), "Tiny", "1", "in", false, 0)
 	if got := w.Body.String(); got != "picture\n" {
 		t.Errorf("got %q", got)
 	}
@@ -1765,5 +1757,122 @@ func TestNextGuideLook(t *testing.T) {
 		if got := nextGuideLook(at(now), 5*time.Minute).Format("15:04:05"); got != want {
 			t.Errorf("after %s: %s, want %s", now, got, want)
 		}
+	}
+}
+
+// A client set to seek by time is offered converted recordings with DLNA time
+// seek (OP=10), not live channels; the stream answers a time seek with the
+// range it serves, refuses one it cannot read or past the end.
+func TestConvertedTimeSeek(t *testing.T) {
+	s := newServerWith(t, config.Config{Default: config.Profile{Mode: config.ModeTranscode, Ads: config.AdsKeep, Seek: config.SeekTime, Transcode: config.DefaultTranscode()}})
+	_, d := browse(t, s.URL, "rec/17", "BrowseMetadata", 0, 0)
+	if len(d.Items) != 1 || !strings.Contains(d.Items[0].Res.Protocol, "DLNA.ORG_OP=10") {
+		t.Errorf("recording: %+v", d.Items)
+	}
+	_, d = browse(t, s.URL, "live/5000", "BrowseMetadata", 0, 0)
+	if len(d.Items) != 1 || !strings.Contains(d.Items[0].Res.Protocol, "DLNA.ORG_OP=00") {
+		t.Errorf("live: %+v", d.Items)
+	}
+	head := func(h string) *http.Response {
+		req, _ := http.NewRequest("HEAD", s.URL+"/stream/rec/17", nil)
+		if h != "" {
+			req.Header.Set("TimeSeekRange.dlna.org", h)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp
+	}
+	// Recording 17 lasts 1:00:05.5.
+	if resp := head("npt=600-"); resp.StatusCode != 200 || resp.Header.Get("TimeSeekRange.dlna.org") != "npt=0:10:00.000-1:00:05.500/1:00:05.500" || !strings.Contains(resp.Header.Get("ContentFeatures.DLNA.ORG"), "OP=10") {
+		t.Errorf("seek: %d %v", resp.StatusCode, resp.Header)
+	}
+	if resp := head("npt=0:10:00.5-"); resp.Header.Get("TimeSeekRange.dlna.org") != "npt=0:10:00.500-1:00:05.500/1:00:05.500" {
+		t.Errorf("h:m:s seek: %v", resp.Header)
+	}
+	if resp := head("bytes=0-"); resp.StatusCode != 400 {
+		t.Errorf("bad header: %d", resp.StatusCode)
+	}
+	if resp := head("npt=4000-"); resp.StatusCode != 416 {
+		t.Errorf("past the end: %d", resp.StatusCode)
+	}
+	if resp := head(""); resp.Header.Get("TimeSeekRange.dlna.org") != "" {
+		t.Errorf("no seek asked: %v", resp.Header)
+	}
+}
+
+func TestParseNPT(t *testing.T) {
+	for in, want := range map[string]float64{"npt=600.5-": 600.5, "npt=0:10:00.500-1:00:00": 600.5, "npt=1:00-": 60, " npt=0-": 0} {
+		if got, ok := parseNPT(in); !ok || got != want {
+			t.Errorf("%q: %v %v", in, got, ok)
+		}
+	}
+	for _, in := range []string{"", "npt=now-", "npt=-5-", "bytes=0-", "npt=1:2:3:4-", "npt=Inf-"} {
+		if _, ok := parseNPT(in); ok {
+			t.Errorf("%q read", in)
+		}
+	}
+}
+
+// A client that seeks by time is told so for a cut recording (OP=10), and the
+// stream answers as one with no length: no byte ranges, the times it serves.
+func TestSeekByTime(t *testing.T) {
+	s := newServerWith(t, config.Config{Default: config.Profile{Mode: config.ModeProxy, Ads: config.AdsCut, Seek: config.SeekTime}})
+	_, d := browse(t, s.URL, "rec/18", "BrowseMetadata", 0, 0)
+	if len(d.Items) != 1 || !strings.Contains(d.Items[0].Res.Protocol, "DLNA.ORG_OP=10") || !strings.HasSuffix(d.Items[0].Res.URL, "/stream/adfree/18") {
+		t.Fatalf("item: %+v", d.Items)
+	}
+	_, d = browse(t, s.URL, "rec/19", "BrowseMetadata", 0, 0) // no breaks: byte ranges as ever
+	if len(d.Items) != 1 || !strings.Contains(d.Items[0].Res.Protocol, "DLNA.ORG_OP=01") {
+		t.Errorf("uncut item: %+v", d.Items)
+	}
+
+	do := func(method string, h map[string]string) *http.Response {
+		req, _ := http.NewRequest(method, s.URL+"/stream/adfree/18", nil)
+		for k, v := range h {
+			req.Header.Set(k, v)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp
+	}
+	resp := do("HEAD", map[string]string{"TimeSeekRange.dlna.org": "npt=0:00:15.000-"})
+	if resp.StatusCode != 200 || resp.Header.Get("Content-Length") != "" || !strings.Contains(resp.Header.Get("ContentFeatures.DLNA.ORG"), "OP=10") {
+		t.Errorf("HEAD: %d %v", resp.StatusCode, resp.Header)
+	}
+	// 60 s, with breaks at 10-20 s and from 50 s on: 40 s long.
+	if got := resp.Header.Get("TimeSeekRange.dlna.org"); got != "npt=0:00:15.000-0:00:40.000/0:00:40.000" {
+		t.Errorf("TimeSeekRange %q", got)
+	}
+	if resp := do("GET", map[string]string{"Range": "bytes=500-"}); resp.StatusCode != http.StatusNotAcceptable {
+		t.Errorf("byte range: %d", resp.StatusCode)
+	}
+	if resp := do("GET", map[string]string{"TimeSeekRange.dlna.org": "npt=41-"}); resp.StatusCode != http.StatusRequestedRangeNotSatisfiable {
+		t.Errorf("past the end: %d", resp.StatusCode)
+	}
+}
+
+// A client set to seek by bytes is not offered time seek on a converted
+// recording, and its time seek is refused.
+func TestConvertedNoTimeSeek(t *testing.T) {
+	s := newServerWith(t, config.Config{Default: config.Profile{Mode: config.ModeTranscode, Ads: config.AdsKeep, Transcode: config.DefaultTranscode()}})
+	_, d := browse(t, s.URL, "rec/17", "BrowseMetadata", 0, 0)
+	if len(d.Items) != 1 || !strings.Contains(d.Items[0].Res.Protocol, "DLNA.ORG_OP=00") {
+		t.Errorf("recording: %+v", d.Items)
+	}
+	req, _ := http.NewRequest("HEAD", s.URL+"/stream/rec/17", nil)
+	req.Header.Set("TimeSeekRange.dlna.org", "npt=600-")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotAcceptable {
+		t.Errorf("time seek from a bytes client: %d", resp.StatusCode)
 	}
 }

@@ -165,7 +165,8 @@ Each client and the default have a **profile**:
 |---|---|
 | Streams | **Through the bridge** (the default): the DVR's stream passed through, with the DLNA headers TVs expect. **Direct**: the client plays the DVR's own stream, which the bridge never sees: an optimization for TVs that accept it (the LGs do; a Samsung does not). **Converted**: ffmpeg converts it, below. |
 | Commercials | **Cut out**, or **Play** (pass through). |
-| Converted | The largest width and height (the picture is fitted inside, both sides even), frames per second, video and audio kbps, audio channels, H.264 profile (baseline has no B-frames and no CABAC, for small decoders). Live channels can come from a small stream the DVR makes first, which costs it less than decoding the full picture here, but the DVR's small stream runs about 10 s behind its full one; leave it off where delay matters. A live channel is kept near its live edge: a client that falls more than 8 s behind skips ahead to the newest keyframe. The result is an MPEG-TS with no length, so it does not seek; a client can instead start a converted recording part-way with `?t=<seconds>` (ffmpeg seeks the input by byte ranges; with commercials cut, the seconds leave the breaks out). `/api/state` lists `"seek"` in its `features` for clients to check. |
+| Seeking | **By bytes** (the default): a recording with its breaks cut has a length and takes byte ranges, which every TV knows; the bridge works out all the cuts before the first byte. A converted recording has no length and does not seek. **By time**: cut and converted recordings are offered with DLNA time seek (`DLNA.ORG_OP=10`) and no length, and the TV asks for a time to start from (`TimeSeekRange.dlna.org`). A cut one starts at once, each cut worked out just before playback reaches it; a converted one starts with ffmpeg seeking the input by byte ranges (with commercials cut, the seconds leave the breaks out). The answer carries the range served; a time seek from a client set to seek by bytes gets 406. Not every TV seeks by time; LG TVs do not. |
+| Converted | The largest width and height (the picture is fitted inside, both sides even), frames per second, video and audio kbps, audio channels, H.264 profile (baseline has no B-frames and no CABAC, for small decoders). Live channels can come from a small stream the DVR makes first, which costs it less than decoding the full picture here, but the DVR's small stream runs about 10 s behind its full one; leave it off where delay matters. A live channel is kept near its live edge: a client that falls more than 8 s behind skips ahead to the newest keyframe. The result is an MPEG-TS with no length, so it does not seek by bytes. |
 
 At most *Conversions at once* run, across all clients; the rest get a 503. Each viewer has an ffmpeg of their
 own, which stops when they leave.
@@ -200,6 +201,10 @@ client has its commercials cut. `-plan-ahead-breaks 0` turns it off.
 A recording can hold damaged packets, cut short where the signal dropped, after which the packets are no longer
 every 188 bytes from the start. The bridge finds the packets again after each one, and passes the damaged bytes on
 as they are, as the DVR's own stream would.
+
+A client set to seek *by time* does not wait for the cut list: the bridge finds the first keyframe after the
+time asked for, sends from there, and finds each later break as the stream nears it. If a break cannot be found
+then, the rest of the recording is sent uncut.
 
 If the recording's video timestamps jump (a splice, an encoder restart), they no longer keep time with the DVR's
 marks, and cutting by them would remove the wrong stretches. The bridge notices, logs it once, and serves that

@@ -37,11 +37,19 @@ const (
 	videoMIME    = "video/mpeg"
 	liveProtocol = "http-get:*:" + videoMIME + ":" + liveFeatures
 	recProtocol  = "http-get:*:" + videoMIME + ":" + recFeatures
+	// A recording with its breaks cut, for a client that seeks by time: no
+	// length and no byte ranges (OP=10).
+	timeProtocol = "http-get:*:" + videoMIME + ":" + timeFeatures
+	timeFeatures = "DLNA.ORG_OP=10;DLNA.ORG_CI=0;" + dlnaFlags
 	tsMIME       = "video/mp2t"
 	// A converted stream is a live MPEG-TS: no length, no seeking.
-	transcodeProtocol = "http-get:*:" + tsMIME + ":DLNA.ORG_OP=00;DLNA.ORG_CI=1;" + dlnaFlags
-	classLive         = "object.item.videoItem.videoBroadcast"
-	classRecorded     = "object.item.videoItem"
+	transcodeProtocol = "http-get:*:" + tsMIME + ":" + transcodeFeatures
+	transcodeFeatures = "DLNA.ORG_OP=00;DLNA.ORG_CI=1;" + dlnaFlags
+	// A converted recording for a client set to seek by time (OP=10).
+	transcodeTimeProtocol = "http-get:*:" + tsMIME + ":" + transcodeTimeFeatures
+	transcodeTimeFeatures = "DLNA.ORG_OP=10;DLNA.ORG_CI=1;" + dlnaFlags
+	classLive             = "object.item.videoItem.videoBroadcast"
+	classRecorded         = "object.item.videoItem"
 )
 
 const didlOpen = `<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/" xmlns:sec="http://www.sec.co.kr/">`
