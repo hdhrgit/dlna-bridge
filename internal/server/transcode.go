@@ -49,7 +49,9 @@ func videoFilter(t config.Transcode) string {
 // ffmpegArgs converts input to an MPEG-TS on stdout as the settings say. For
 // the DVR's live HLS it starts at the newest segment rather than three back.
 // userAgent, if there is one, is what ffmpeg calls itself to the server it reads.
-func ffmpegArgs(t config.Transcode, input string, liveHLS bool, userAgent string) []string {
+// start, if over 0, is where in the input to begin, in seconds: an input seek,
+// which ffmpeg makes with a byte range on a recording.
+func ffmpegArgs(t config.Transcode, input string, liveHLS bool, userAgent string, start float64) []string {
 	kbps := func(n int) string { return strconv.Itoa(n) + "k" }
 	x264 := []string{}
 	if t.SingleSlice {
@@ -62,6 +64,9 @@ func ffmpegArgs(t config.Transcode, input string, liveHLS bool, userAgent string
 	}
 	if liveHLS {
 		args = append(args, "-live_start_index", "-1")
+	}
+	if start > 0 {
+		args = append(args, "-ss", strconv.FormatFloat(start, 'f', -1, 64))
 	}
 	args = append(args,
 		"-i", input,
@@ -81,9 +86,10 @@ func ffmpegArgs(t config.Transcode, input string, liveHLS bool, userAgent string
 }
 
 // transcode runs ffmpeg for one client and streams what it makes. The stream
-// has no length and does not seek. It stops when the client goes. A live
-// channel is kept near its live edge: a client that reads slower than it
-// plays skips ahead rather than falling behind.
+// has no length and does not seek, but a recording starts at ?t=<seconds> if
+// asked. It stops when the client goes. A live channel is kept near its live
+// edge: a client that reads slower than it plays skips ahead rather than
+// falling behind.
 func (s *Server) transcode(w http.ResponseWriter, r *http.Request, t config.Transcode, client, what, input string, live bool) {
 	w.Header().Set("Content-Type", tsMIME)
 	w.Header().Set("Cache-Control", "no-cache, no-store")
@@ -103,8 +109,15 @@ func (s *Server) transcode(w http.ResponseWriter, r *http.Request, t config.Tran
 	w = &countWriter{w, s.jobs.counter(id)}
 
 	started := time.Now()
+	start := 0.0
+	if !live {
+		start = startAt(r)
+	}
+	if start > 0 {
+		what += fmt.Sprintf(" from %s", time.Duration(start*float64(time.Second)).Round(time.Second))
+	}
 	s.cfg.Logf("transcode: %s to %s (%s)", what, ip, client)
-	args := ffmpegArgs(t, input, live && strings.Contains(input, ".m3u8"), s.agent())
+	args := ffmpegArgs(t, input, live && strings.Contains(input, ".m3u8"), s.agent(), start)
 	if live {
 		setSendBuffer(r, liveSendBuffer)
 	}
@@ -119,6 +132,19 @@ func (s *Server) transcode(w http.ResponseWriter, r *http.Request, t config.Tran
 		}
 		s.cfg.Logf("transcode: %s gave nothing, trying again", what)
 	}
+}
+
+// maxStart is the furthest ?t= is taken: longer than any recording.
+const maxStart = 48 * 3600
+
+// startAt is where a client asks a recording to start, from ?t=<seconds>; 0 for
+// none, or for anything that isn't a number of seconds within maxStart.
+func startAt(r *http.Request) float64 {
+	t, err := strconv.ParseFloat(r.URL.Query().Get("t"), 64)
+	if err != nil || !(t > 0 && t <= maxStart) {
+		return 0
+	}
+	return t
 }
 
 // startLimit is how long ffmpeg may take to give its first bytes. The DVR's

@@ -46,6 +46,9 @@ type state struct {
 	FFmpegOK    bool             `json:"ffmpeg_ok"`
 	Discovery   *ssdp.Stats      `json:"discovery,omitempty"`
 	Location    string           `json:"location"` // where a TV finds the description
+	// Features a client can check for: "seek" is ?t=<seconds> on a converted
+	// recording's stream.
+	Features []string `json:"features"`
 }
 
 func (s *Server) apiState(w http.ResponseWriter, r *http.Request) {
@@ -54,6 +57,7 @@ func (s *Server) apiState(w http.ResponseWriter, r *http.Request) {
 		Config: s.cfg.Settings.Get(), ConfigPath: s.cfg.ConfigPath, Saved: s.cfg.Settings.Persistent(),
 		Clients: s.clients.list(), Streams: s.jobs.list(), Defaults: config.DefaultTranscode(),
 		DVRHealth: s.cfg.DVR.Health(), DVRClient: s.registration(), UptimeSecs: int64(time.Since(s.started).Seconds()), Location: "http://" + s.hostOf(r) + "/description.xml",
+		Features: []string{"seek"},
 	}
 	st.FFmpeg, st.FFmpegOK = s.ffmpegInfo()
 	if s.cfg.Discovery != nil {

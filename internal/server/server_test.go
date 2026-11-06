@@ -511,12 +511,12 @@ func TestHeadOnStreams(t *testing.T) {
 // 4:3 of the picture stretched to exactly its size.
 func TestFFmpegArgs(t *testing.T) {
 	tc := config.DefaultTranscode()
-	args := strings.Join(ffmpegArgs(tc, "in", false, ""), " ")
+	args := strings.Join(ffmpegArgs(tc, "in", false, "", 0), " ")
 	if !strings.Contains(args, `-vf fps=min(source_fps\,24),scale=240:240:force_original_aspect_ratio=decrease,`) || strings.Contains(args, "x264-params") {
 		t.Errorf("default: %s", args)
 	}
 	tc.MaxHeight, tc.ExactSize, tc.Crop, tc.SingleSlice = 192, true, "4:3", true
-	args = strings.Join(ffmpegArgs(tc, "in", false, ""), " ")
+	args = strings.Join(ffmpegArgs(tc, "in", false, "", 0), " ")
 	for _, want := range []string{
 		`-vf fps=min(source_fps\,24),crop=min(iw\,ih*4/3):min(ih\,iw*3/4),scale=240:192,setsar=1,format=yuv420p `,
 		"-tune zerolatency -x264-params sliced-threads=0:slices=1 -g 48 ",
@@ -525,8 +525,31 @@ func TestFFmpegArgs(t *testing.T) {
 			t.Errorf("board: no %q in %s", want, args)
 		}
 	}
-	if args := strings.Join(ffmpegArgs(tc, "in", true, ""), " "); !strings.Contains(args, "-live_start_index -1 -i in ") {
+	if args := strings.Join(ffmpegArgs(tc, "in", true, "", 0), " "); !strings.Contains(args, "-live_start_index -1 -i in ") {
 		t.Errorf("live HLS: %s", args)
+	}
+}
+
+// A recording asked for at ?t= starts there: an input seek, before -i. Without
+// it, or with a t that isn't a sensible number of seconds, it starts at the top.
+func TestFFmpegStart(t *testing.T) {
+	tc := config.DefaultTranscode()
+	if args := strings.Join(ffmpegArgs(tc, "in", false, "", 90), " "); !strings.Contains(args, " -ss 90 -i in ") {
+		t.Errorf("t=90: %s", args)
+	}
+	if args := strings.Join(ffmpegArgs(tc, "in", false, "", 12.5), " "); !strings.Contains(args, " -ss 12.5 -i in ") {
+		t.Errorf("t=12.5: %s", args)
+	}
+	if args := strings.Join(ffmpegArgs(tc, "in", false, "", 0), " "); strings.Contains(args, "-ss") {
+		t.Errorf("no t: %s", args)
+	}
+	for q, want := range map[string]float64{
+		"": 0, "t=90": 90, "t=12.5": 12.5, "t=0": 0, "t=-5": 0, "t=abc": 0, "t=NaN": 0, "t=Inf": 0, "t=1e9": 0,
+	} {
+		r := httptest.NewRequest("GET", "/stream/rec/7?profile=esp32&"+q, nil)
+		if got := startAt(r); got != want {
+			t.Errorf("%q: %v, want %v", q, got, want)
+		}
 	}
 }
 
@@ -954,7 +977,7 @@ func TestUserAgentToTheDVR(t *testing.T) {
 			t.Errorf("%s asked as %q", path, got)
 		}
 	}
-	if args := strings.Join(ffmpegArgs(config.DefaultTranscode(), "http://dvr/x", false, "dlna-bridge/9.9"), " "); !strings.Contains(args, "-user_agent dlna-bridge/9.9 -i http://dvr/x") {
+	if args := strings.Join(ffmpegArgs(config.DefaultTranscode(), "http://dvr/x", false, "dlna-bridge/9.9", 0), " "); !strings.Contains(args, "-user_agent dlna-bridge/9.9 -i http://dvr/x") {
 		t.Errorf("ffmpeg: %s", args)
 	}
 }
