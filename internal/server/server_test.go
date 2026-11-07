@@ -47,6 +47,15 @@ func fakeDVR(t *testing.T) *httptest.Server {
 		"/dvr/groups": `[{"ID":"g1","Name":"Nova","Image":"http://x/nova.jpg"},{"ID":"g2","Name":"Live Show"},{"ID":"movies","Name":"Movies"}]`,
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/dvr/files/21/stream.mpg" { // still being recorded: no length yet
+			if r.Header.Get("Range") == "bytes=500-" {
+				t.Error("a range past the end reached the DVR, which would hang")
+			}
+			w.Header().Set("Content-Range", "bytes 0-99/*")
+			w.WriteHeader(http.StatusPartialContent)
+			w.Write(make([]byte, 100))
+			return
+		}
 		if r.URL.Path == "/dvr/files/17/stream.mpg" { // like the DVR: no HEAD, ranges answer 206
 			if r.Method == http.MethodHead {
 				http.Error(w, "no", http.StatusMethodNotAllowed)
@@ -505,6 +514,35 @@ func TestHeadOnStreams(t *testing.T) {
 	rec := head("/stream/rec/17")
 	if rec.StatusCode != 200 || rec.Header.Get("Content-Length") != "123456" || rec.Header.Get("Accept-Ranges") != "bytes" {
 		t.Errorf("recording: %d %v", rec.StatusCode, rec.Header)
+	}
+}
+
+// A recording still being made has no length: it is offered as growing, with
+// seeking up to what the DVR has so far, and HEAD answers 200 with that range,
+// not a 206 a TV takes for an error.
+func TestGrowingRecording(t *testing.T) {
+	s := newTestServer(t, true)
+	_, d := browse(t, s.URL, "rec/21", "BrowseMetadata", 0, 0)
+	if len(d.Items) != 1 || !strings.Contains(d.Items[0].Res.Protocol, "DLNA.ORG_OP=01") || !strings.Contains(d.Items[0].Res.Protocol, "FLAGS=257") {
+		t.Errorf("item: %+v", d.Items)
+	}
+	req, _ := http.NewRequest("HEAD", s.URL+"/stream/rec/21", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 || resp.Header.Get("Content-Length") != "" || !strings.Contains(resp.Header.Get("ContentFeatures.DLNA.ORG"), "FLAGS=257") || resp.Header.Get("availableSeekRange.dlna.org") != "1 bytes=0-99" {
+		t.Errorf("HEAD: %d %v", resp.StatusCode, resp.Header)
+	}
+	req, _ = http.NewRequest("GET", s.URL+"/stream/rec/21", nil)
+	req.Header.Set("Range", "bytes=500-")
+	if resp, err = http.DefaultClient.Do(req); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestedRangeNotSatisfiable || resp.Header.Get("availableSeekRange.dlna.org") != "1 bytes=0-99" {
+		t.Errorf("past the end: %d %v", resp.StatusCode, resp.Header)
 	}
 }
 

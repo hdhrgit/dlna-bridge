@@ -416,6 +416,9 @@ func (s *Server) recordingObject(v view, f dvr.Recording, id, parent string) obj
 		bridge = "/stream/adfree/" + eid
 	}
 	protocol := recProtocol
+	if !f.Completed {
+		protocol = growingProtocol // still growing: seeking within what is there
+	}
 	if cut && v.prof.Seek == config.SeekTime {
 		protocol = timeProtocol
 	}

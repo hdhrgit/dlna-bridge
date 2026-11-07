@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -53,8 +54,12 @@ func (s *Server) streamRecording(w http.ResponseWriter, r *http.Request) {
 	if prof.Mode != config.ModeTranscode {
 		tw, done := s.tracked(w, r, "recording", name, s.whatRecording(r, id))
 		defer done()
+		features := recFeatures
+		if f, found, err := s.cfg.DVR.Recording(r.Context(), id); err == nil && found && !f.Completed {
+			features = growingFeatures
+		}
 		bc, began := &byteCounter{ResponseWriter: tw}, time.Now()
-		s.proxy(bc, r, dvr.RecordingPath(id), recFeatures)
+		s.proxy(bc, r, dvr.RecordingPath(id), features)
 		// The TV has usually hung up by now, which ends r's context.
 		if f, found, err := s.cfg.DVR.Recording(context.WithoutCancel(r.Context()), id); err == nil && found {
 			s.streamPosition(r, f, false, rangeStart(r), bc.n, f.FileSize, began)
@@ -77,7 +82,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, dvrPath, features
 		// first byte to learn the length; a live stream has none.
 		method = http.MethodGet
 		rg = ""
-		if features == recFeatures {
+		if features != liveFeatures {
 			rg = "bytes=0-0"
 		}
 	}
@@ -90,9 +95,19 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, dvrPath, features
 	if rg != "" {
 		req.Header.Set("Range", rg)
 	}
-	if r.Method == http.MethodHead && features != recFeatures {
+	if r.Method == http.MethodHead && features == liveFeatures {
 		s.dlnaHeaders(w, features)
 		return
+	}
+	if features == growingFeatures && r.Method == http.MethodGet && rangeStart(r) > 0 {
+		// The DVR does not answer a range past what it has of a recording
+		// still being made, until it has it: refuse one past the end now.
+		if end, ok := s.growingEnd(r, dvrPath); ok && rangeStart(r) > end {
+			s.dlnaHeaders(w, features)
+			w.Header().Set("availableSeekRange.dlna.org", "1 bytes=0-"+strconv.FormatInt(end, 10))
+			http.Error(w, "not recorded yet", http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
 	}
 	// No client timeout: a stream runs as long as the TV watches.
 	resp, err := http.DefaultTransport.RoundTrip(req)
@@ -109,6 +124,16 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, dvrPath, features
 			w.Header().Set("Accept-Ranges", "bytes")
 			return
 		}
+		// A recording still being made has no length yet ("bytes 0-N/*"):
+		// it is a stream whose end moves, seekable up to N. A 206 without a
+		// range asked for would read as an error (an LG: "716 Resource not
+		// found").
+		if resp.StatusCode/100 == 2 {
+			w.Header().Set("ContentFeatures.DLNA.ORG", growingFeatures)
+			w.Header().Set("Accept-Ranges", "bytes")
+			availableRange(w, resp)
+			return
+		}
 		w.WriteHeader(resp.StatusCode)
 		return
 	}
@@ -117,8 +142,48 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, dvrPath, features
 			w.Header().Set(h, v)
 		}
 	}
+	if features == growingFeatures {
+		availableRange(w, resp)
+	}
 	w.WriteHeader(resp.StatusCode)
 	copyFlushing(w, resp.Body)
+}
+
+// growingEnd is the last byte the DVR has of a recording still being made.
+func (s *Server) growingEnd(r *http.Request, dvrPath string) (int64, bool) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "GET", s.cfg.DVR.Base.String()+dvrPath, nil)
+	if err != nil {
+		return 0, false
+	}
+	s.cfg.DVR.SetAgent(req)
+	req.Header.Set("Range", "bytes=0-0")
+	resp, err := http.DefaultTransport.RoundTrip(req)
+	if err != nil {
+		return 0, false
+	}
+	resp.Body.Close()
+	rng, total, ok := strings.Cut(strings.TrimPrefix(resp.Header.Get("Content-Range"), "bytes "), "/")
+	if !ok || total != "*" {
+		return 0, false
+	}
+	_, e, _ := strings.Cut(rng, "-")
+	end, err := strconv.ParseInt(e, 10, 64)
+	return end, err == nil
+}
+
+// availableRange tells a TV how far into a recording still being made it can
+// seek: to the last byte the DVR has, from its "bytes a-N/*".
+func availableRange(w http.ResponseWriter, resp *http.Response) {
+	cr := resp.Header.Get("Content-Range")
+	rng, total, ok := strings.Cut(strings.TrimPrefix(cr, "bytes "), "/")
+	if !ok || total != "*" {
+		return
+	}
+	if _, end, ok := strings.Cut(rng, "-"); ok {
+		w.Header().Set("availableSeekRange.dlna.org", "1 bytes=0-"+end)
+	}
 }
 
 func (s *Server) dlnaHeaders(w http.ResponseWriter, features string) {

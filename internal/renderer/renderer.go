@@ -33,7 +33,8 @@ type Renderer struct {
 	rc    string
 }
 
-var client = &http.Client{Timeout: 5 * time.Second,
+// A TV can take a while to answer while it switches what it plays.
+var client = &http.Client{Timeout: 15 * time.Second,
 	// A redirect would send the request wherever the device says.
 	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 

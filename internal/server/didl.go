@@ -36,8 +36,13 @@ const (
 	liveFeatures = "DLNA.ORG_OP=00;DLNA.ORG_CI=0;" + dlnaFlags
 	recFeatures  = "DLNA.ORG_OP=01;DLNA.ORG_CI=0;" + dlnaFlags
 	videoMIME    = "video/mpeg"
-	liveProtocol = "http-get:*:" + videoMIME + ":" + liveFeatures
-	recProtocol  = "http-get:*:" + videoMIME + ":" + recFeatures
+	// A recording still being made: byte seeking within what is there so far
+	// (limited operation, bit 29), and an end that keeps moving
+	// (sn-increasing, bit 26), with the flags above.
+	growingFeatures = "DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=25700000000000000000000000000000"
+	growingProtocol = "http-get:*:" + videoMIME + ":" + growingFeatures
+	liveProtocol    = "http-get:*:" + videoMIME + ":" + liveFeatures
+	recProtocol     = "http-get:*:" + videoMIME + ":" + recFeatures
 	// A recording with its breaks cut, for a client that seeks by time: no
 	// length and no byte ranges (OP=10).
 	timeProtocol = "http-get:*:" + videoMIME + ":" + timeFeatures
