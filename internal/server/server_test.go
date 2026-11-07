@@ -1793,6 +1793,17 @@ func TestArtProxy(t *testing.T) {
 	if resp, _ := http.Get(s.URL + "/art/0123456789abcdef0123.jpg"); resp.StatusCode != 404 {
 		t.Errorf("an address not handed out: %d", resp.StatusCode)
 	}
+	// A picture that cannot be fetched comes back as the bridge's icon.
+	broken := srv.artURL(v, "http://127.0.0.1:1/nothing.png")
+	resp, err = http.Get(s.URL + strings.TrimPrefix(broken, "http://10.0.0.2:8200"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, err = jpeg.Decode(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || err != nil || img.Bounds().Dx() != 120 {
+		t.Errorf("broken picture: %d %v", resp.StatusCode, err)
+	}
 }
 
 // When the show on now changes on a channel, the TVs are told that the

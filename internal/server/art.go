@@ -31,10 +31,11 @@ const (
 )
 
 type artStore struct {
-	mu   sync.Mutex
-	urls map[string]string // key: the picture's address
-	made map[string]*list.Element
-	lru  *list.List // of *artEntry, most recently used first
+	mu     sync.Mutex
+	failed map[string]time.Time // pictures that could not be fetched, and when
+	urls   map[string]string    // key: the picture's address
+	made   map[string]*list.Element
+	lru    *list.List // of *artEntry, most recently used first
 }
 
 type artEntry struct {
@@ -75,11 +76,30 @@ func (s *Server) serveArt(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	a.mu.Lock()
+	failedAt, failed := a.failed[key]
+	a.mu.Unlock()
+	if data == nil && failed && time.Since(failedAt) < artRetry {
+		data = artFallback()
+	}
 	if data == nil {
 		var err error
 		if data, err = s.thumbnail(r, u); err != nil {
-			s.cfg.Logf("art: %s: %v", u, err)
-			http.Error(w, err.Error(), http.StatusBadGateway)
+			// A broken picture would show as one: the bridge's icon instead,
+			// and no new try for a while.
+			a.mu.Lock()
+			if a.failed == nil {
+				a.failed = map[string]time.Time{}
+			}
+			if _, again := a.failed[key]; !again {
+				s.cfg.Logf("art: %s: %v; showing the bridge's icon", u, err)
+			}
+			a.failed[key] = time.Now()
+			a.mu.Unlock()
+			data = artFallback()
+			w.Header().Set("Content-Type", "image/jpeg")
+			w.Header().Set("Cache-Control", "max-age=600")
+			w.Write(data)
 			return
 		}
 		a.mu.Lock()
@@ -98,6 +118,15 @@ func (s *Server) serveArt(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "max-age=86400")
 	w.Header().Set("ContentFeatures.DLNA.ORG", "DLNA.ORG_PN=JPEG_TN")
 	w.Write(data)
+}
+
+// artRetry is how long a picture that could not be fetched is not tried again.
+const artRetry = 10 * time.Minute
+
+// artFallback is the picture for one that could not be fetched.
+func artFallback() []byte {
+	b, _, _ := iconFile("logo120.jpg")
+	return b
 }
 
 // thumbnail fetches a picture and makes it a JPEG that fits in artSize.
