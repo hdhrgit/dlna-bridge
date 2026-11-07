@@ -91,6 +91,10 @@ type job struct {
 	What      string
 	Since     time.Time
 	bytes     *atomic.Int64
+	// Object is what is watched, for Watched by others: live/<number>[?dev],
+	// rec/<id> or adfree/<id>; Start the byte it began at.
+	Object string
+	Start  int64
 }
 
 // jobView is what the page shows: one row for each client and thing watched,
@@ -209,13 +213,49 @@ func (c *countWriter) Flush() { c.FlushError() }
 
 // tracked lists a stream passed through while it runs, with the bytes sent.
 // Requests for headers, and the bridge's own reads, are not listed.
-func (s *Server) tracked(w http.ResponseWriter, r *http.Request, kind, client, what string) (http.ResponseWriter, func()) {
+func (s *Server) tracked(w http.ResponseWriter, r *http.Request, kind, client, what, object string) (http.ResponseWriter, func()) {
 	ip := s.clientIP(r)
 	if r.Method == http.MethodHead || ip == "127.0.0.1" || ip == "::1" {
 		return w, func() {}
 	}
 	id := s.jobs.track(kind, client, ip, r.Header.Get("User-Agent"), what)
+	s.jobs.mu.Lock()
+	if e := s.jobs.m[id]; e != nil {
+		e.Object, e.Start = object, rangeStart(r)
+	}
+	s.jobs.mu.Unlock()
 	return &countWriter{w, s.jobs.counter(id)}, func() { s.jobs.end(id) }
+}
+
+// watching is one client's stream of one thing, for Watched by others.
+type watching struct {
+	Client, IP, Object string
+	Start, Bytes       int64
+	Since              time.Time
+}
+
+// watched lists what each client is streaming now: for each client and thing,
+// its connection that has sent the most, a TV's real one among its probes.
+func (j *jobs) watched() []watching {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	best := map[[2]string]watching{}
+	for _, e := range j.m {
+		if e.Object == "" {
+			continue
+		}
+		k := [2]string{e.IP, e.Object}
+		w := watching{e.Client, e.IP, e.Object, e.Start, e.bytes.Load(), e.Since}
+		if b, ok := best[k]; !ok || w.Bytes > b.Bytes {
+			best[k] = w
+		}
+	}
+	out := make([]watching, 0, len(best))
+	for _, w := range best {
+		out = append(out, w)
+	}
+	sort.Slice(out, func(a, b int) bool { return out[a].Since.Before(out[b].Since) })
+	return out
 }
 
 func remoteIP(r *http.Request) string {

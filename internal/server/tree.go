@@ -18,6 +18,7 @@ import (
 // view is who is asking: the address the client used to reach this server, and
 // how it is to be served.
 type view struct {
+	ip   string // the client's own address
 	host string
 	name string // the matched client, or empty for the default profile
 	prof config.Profile
@@ -25,7 +26,7 @@ type view struct {
 
 func (s *Server) viewOf(r *http.Request) view {
 	name, prof := s.profileFor(r)
-	return view{host: s.hostOf(r), name: name, prof: prof}
+	return view{ip: s.clientIP(r), host: s.hostOf(r), name: name, prof: prof}
 }
 
 func (s *Server) browse(ctx context.Context, v view, args map[string]string) ([][2]string, error) {
@@ -99,10 +100,10 @@ func (s *Server) children(ctx context.Context, v view, id string) ([]object, err
 	switch {
 	case id == idRoot:
 		var out []object
-		for _, f := range []string{idLive, idFavorites, idRecent, idRecordings, idMovies, idRecNow, idSources, idListen, idListenSources} {
+		for _, f := range []string{idLive, idFavorites, idRecent, idRecordings, idMovies, idRecNow, idOthers, idSources, idListen, idListenSources} {
 			o, err := s.lookup(ctx, v, f)
 			if err == errNoSuchObject {
-				continue // no favorites, no movies, or nothing recording
+				continue // no favorites, no movies, nothing recording, nobody else watching
 			}
 			if err != nil {
 				return nil, err
@@ -133,6 +134,10 @@ func (s *Server) children(ctx context.Context, v view, id string) ([]object, err
 		return folders, err
 	case id == idRecNow:
 		return s.recordingNow(ctx, v)
+	case id == idOthers:
+		return s.othersItems(ctx, v)
+	case strings.HasPrefix(id, idOthers+"/"):
+		return nil, nil
 	case id == idRecent:
 		return s.recentRecordings(ctx, v)
 	case id == idMovies:
@@ -238,6 +243,18 @@ func (s *Server) lookup(ctx context.Context, v view, id string) (object, error) 
 			err = errNoSuchObject
 		}
 		return o, err
+	case id == idOthers:
+		o, err := folder("Watched by others", func() ([]object, error) { return s.othersItems(ctx, v) })
+		if err == nil && o.Children == 0 {
+			err = errNoSuchObject
+		}
+		return o, err
+	case strings.HasPrefix(id, idOthers+"/"):
+		items, err := s.othersItems(ctx, v)
+		if err != nil {
+			return object{}, err
+		}
+		return find(items, id)
 	case id == idRecNow:
 		o, err := folder("Recording now", func() ([]object, error) { return s.recordingNow(ctx, v) })
 		if err == nil && o.Children == 0 {

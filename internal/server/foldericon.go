@@ -29,6 +29,7 @@ var folderIcons = map[string]folderIcon{
 	idRecordings:    {bg: color.RGBA{0x6a, 0x3d, 0xc4, 0xff}, sign: showsSign},
 	idMovies:        {bg: color.RGBA{0x9b, 0x2c, 0x2c, 0xff}, sign: filmSign},
 	idRecNow:        {bg: color.RGBA{0x30, 0x34, 0x3c, 0xff}, sign: recordSign, fg: color.RGBA{0xe5, 0x39, 0x35, 0xff}},
+	idOthers:        {bg: color.RGBA{0x1d, 0x6f, 0x6a, 0xff}, sign: showsSign},
 	idSources:       {bg: color.RGBA{0x0b, 0x7d, 0x8c, 0xff}, sign: towerSign},
 	idListen:        {bg: color.RGBA{0xc2, 0x3b, 0x7a, 0xff}, sign: noteSign},
 	idListenSources: {bg: color.RGBA{0x8a, 0x2b, 0x5a, 0xff}, sign: noteSign},

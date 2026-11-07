@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -137,6 +138,9 @@ func (s *Server) playOn(r *http.Request, rd renderer.Renderer, id string) error 
 			id = idListen + "/" + n
 		case strings.HasPrefix(id, "srcch/"):
 			id = "lsrcch/" + strings.TrimPrefix(id, "srcch/")
+		case strings.HasPrefix(id, idOthers+"/live/"):
+			id = idOthers + "/listen/" + strings.TrimPrefix(id, idOthers+"/live/")
+		case strings.HasPrefix(id, idOthers+"/listen/"):
 		case strings.HasPrefix(id, "listen/"), strings.HasPrefix(id, "lsrcch/"):
 		default:
 			return errString(rd.Name + " plays sound only: pick a live channel")
@@ -147,7 +151,26 @@ func (s *Server) playOn(r *http.Request, rd renderer.Renderer, id string) error 
 		return errString("nothing to play there")
 	}
 	s.cfg.Logf("play on %s (%s): %s", rd.Name, rd.IP, o.Title)
-	return rd.Play(r.Context(), o.URL, didl([]object{o}))
+	if err := rd.Play(r.Context(), o.URL, didl([]object{o})); err != nil {
+		return err
+	}
+	if at := joinAt(o); at > 0 {
+		// Joining another client: go to where it is, once the TV has started.
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			for i := 0; i < 10; i++ {
+				time.Sleep(time.Second)
+				if st, err := rd.State(ctx); err == nil && st.State == "PLAYING" {
+					break
+				}
+			}
+			if err := rd.Seek(ctx, int(at.Seconds())); err != nil {
+				s.cfg.Logf("play on %s: joining at %s: %v", rd.Name, at, err)
+			}
+		}()
+	}
+	return nil
 }
 
 type errString string

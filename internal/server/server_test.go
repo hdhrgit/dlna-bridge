@@ -208,6 +208,38 @@ func TestListen(t *testing.T) {
 	}
 }
 
+// Watched by others lists what other clients play now, once each, not the
+// asking client's own, nor a TV's probes; a recording carries where the other
+// client is as its resume point.
+func TestWatchedByOthers(t *testing.T) {
+	c, _ := dvr.New(strings.Replace(fakeDVR(t).URL, "127.0.0.1", "localhost", 1))
+	srv := New(Config{DVR: c, Settings: mustSettings(t, config.Config{Default: config.Profile{Mode: config.ModeProxy, Ads: config.AdsKeep}})})
+	add := func(ip, object string, start, sent int64) {
+		id := srv.jobs.track("recording", "Den", ip, "", "x")
+		srv.jobs.m[id].Object, srv.jobs.m[id].Start = object, start
+		srv.jobs.m[id].bytes.Store(sent)
+	}
+	add("10.0.0.7", "live/5002", 0, 50<<20)
+	add("10.0.0.7", "live/5002", 0, 1<<10)  // a probe of the same
+	add("10.0.0.8", "rec/18", 0, 1<<20)     // too little: a probe
+	add("10.0.0.9", "rec/18", 0, 100<<20)   // more than its 1000 bytes: at its end
+	add("10.0.0.5", "live/5000", 0, 50<<20) // the asking client's own
+	items, err := srv.othersItems(context.Background(), view{ip: "10.0.0.5", host: "h:1"})
+	if err != nil || len(items) != 3 {
+		t.Fatalf("others: %+v %v", items, err)
+	}
+	if items[0].ID != "others/live/5002" || !strings.HasPrefix(items[0].Title, "Den: 5002") {
+		t.Errorf("channel: %+v", items[0])
+	}
+	if items[1].ID != "others/listen/5002" || items[1].Class != classAudioLive || !strings.HasSuffix(items[1].Title, "(sound)") {
+		t.Errorf("its sound: %+v", items[1])
+	}
+	items = items[1:]
+	if items[1].ID != "others/rec/18" || items[1].Bookmark != 50 || joinAt(items[1]) != 50*time.Second {
+		t.Errorf("recording: %+v", items[1])
+	}
+}
+
 func TestBrowseLive(t *testing.T) {
 	s := newTestServer(t, false)
 	br, d := browse(t, s.URL, "live", "BrowseDirectChildren", 0, 0)

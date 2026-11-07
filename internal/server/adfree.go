@@ -208,7 +208,7 @@ func (s *Server) streamAdFree(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	name, prof := s.profileFor(r)
-	tw, done := s.tracked(w, r, "recording", name, s.whatRecording(r, id)+" (ads cut)")
+	tw, done := s.tracked(w, r, "recording", name, s.whatRecording(r, id)+" (ads cut)", "adfree/"+id)
 	defer done()
 	if prof.Seek == config.SeekTime && r.URL.Query().Get("raw") == "" {
 		s.adFreeByTime(tw, r, id)
