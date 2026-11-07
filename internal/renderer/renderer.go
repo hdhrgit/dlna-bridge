@@ -136,9 +136,25 @@ func describe(ctx context.Context, loc, ip string) (Renderer, error) {
 	}
 	// What it plays: a sink list with no video in it is a player for sound.
 	if v, err := call(ctx, r.cm, connectionManager, "GetProtocolInfo", nil); err == nil && v["Sink"] != "" {
-		r.AudioOnly = !strings.Contains(v["Sink"], "video/")
+		r.AudioOnly = !playsVideo(v["Sink"])
 	}
 	return r, nil
+}
+
+// playsVideo says whether a sink protocol list takes a video stream. A
+// playlist type (video/mpegurl, as a kitchen speaker lists) is not one.
+func playsVideo(sink string) bool {
+	for _, p := range strings.Split(sink, ",") {
+		parts := strings.Split(p, ":")
+		if len(parts) < 3 {
+			continue
+		}
+		mime := strings.ToLower(strings.TrimSpace(parts[2]))
+		if strings.HasPrefix(mime, "video/") && !strings.Contains(mime, "mpegurl") || mime == "*" {
+			return true
+		}
+	}
+	return false
 }
 
 // call sends one SOAP action and returns the values of the answer.

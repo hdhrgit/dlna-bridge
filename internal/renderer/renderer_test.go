@@ -83,3 +83,16 @@ func TestRendererOtherAddress(t *testing.T) {
 		t.Error("took a description on another address than the one that answered")
 	}
 }
+
+func TestPlaysVideo(t *testing.T) {
+	for sink, want := range map[string]bool{
+		"http-get:*:video/mpeg:*,http-get:*:audio/mpeg:*":                                 true,
+		"http-get:*:audio/mpeg:*,http-get:*:video/mpegurl:*,http-get:*:video/x-mpegurl:*": false,
+		"http-get:*:audio/vnd.dlna.adts:*":                                                false,
+		"http-get:*:*:*":                                                                  true,
+	} {
+		if got := playsVideo(sink); got != want {
+			t.Errorf("%s: %v", sink, got)
+		}
+	}
+}
