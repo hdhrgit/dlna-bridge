@@ -1436,15 +1436,15 @@ func TestOwnActivity(t *testing.T) {
 	}
 
 	// Another client on the bridge's address: the DVR names it, and the log says so.
-	hostname = "Home Theater"
+	hostname = "Living Room"
 	srv.reg = registration{}
 	register()
-	if st := state(); st.Client.DVRName != "Home Theater" {
+	if st := state(); st.Client.DVRName != "Living Room" {
 		t.Errorf("shared address: %+v", st)
 	}
 	lmu.Lock()
 	defer lmu.Unlock()
-	if !strings.Contains(strings.Join(logs, "\n"), `the DVR calls client cid-9 "Home Theater"`) {
+	if !strings.Contains(strings.Join(logs, "\n"), `the DVR calls client cid-9 "Living Room"`) {
 		t.Errorf("logs: %q", logs)
 	}
 }
