@@ -607,6 +607,15 @@ func (c *Client) ClientInfo(ctx context.Context, id string) (ClientEntry, bool, 
 	return ClientEntry{}, false, nil
 }
 
+// SoundStreamURL asks the DVR for a channel's sound alone, as it comes: an HLS
+// stream with no video and the audio unconverted.
+func (c *Client) SoundStreamURL(device, number string) string {
+	if device == "" {
+		device = "ANY"
+	}
+	return c.Base.String() + "/devices/" + url.PathEscape(device) + "/channels/" + url.PathEscape(number) + "/hls/master.m3u8?acodec=copy&vcodec=none"
+}
+
 // SmallStreamAudioKbps is the sound's bitrate in the DVR's small stream.
 const SmallStreamAudioKbps = 64
 

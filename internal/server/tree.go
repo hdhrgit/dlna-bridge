@@ -96,7 +96,51 @@ const (
 // folder of their own at the top, beside the shows.
 const movieGroup = "movies"
 
+// soundObject says whether an id is one of the Listen folders or their
+// channels, which a client set to sound alone is shown, and one set to video
+// is not.
+func soundObject(id string) bool {
+	switch {
+	case id == idListen, id == idListenSources, strings.HasPrefix(id, "lsrc/"), strings.HasPrefix(id, idListen+"/"),
+		strings.HasPrefix(id, "lsrcch/"), strings.HasPrefix(id, idOthers+"/"+idListen+"/"):
+		return true
+	}
+	return false
+}
+
+// hides says whether the client does not see an id, as its profile's kind says.
+func (v view) hides(id string) bool {
+	switch {
+	case id == idRoot:
+		return false
+	case v.prof.Kind == config.KindVideo:
+		return soundObject(id)
+	case v.prof.Kind == config.KindSound:
+		return !soundObject(id)
+	}
+	return false
+}
+
+// children lists what is in a folder the client sees, leaving out what it
+// does not.
 func (s *Server) children(ctx context.Context, v view, id string) ([]object, error) {
+	if v.hides(id) {
+		return nil, errNoSuchObject
+	}
+	kids, err := s.allChildren(ctx, v, id)
+	if err != nil || v.prof.Kind == "" || v.prof.Kind == config.KindBoth {
+		return kids, err
+	}
+	out := kids[:0:0]
+	for _, o := range kids {
+		if !v.hides(o.ID) {
+			out = append(out, o)
+		}
+	}
+	return out, nil
+}
+
+func (s *Server) allChildren(ctx context.Context, v view, id string) ([]object, error) {
 	switch {
 	case id == idRoot:
 		var out []object
@@ -165,13 +209,27 @@ func (s *Server) children(ctx context.Context, v view, id string) ([]object, err
 	return nil, errNoSuchObject
 }
 
+// lookup finds one object the client sees.
 func (s *Server) lookup(ctx context.Context, v view, id string) (object, error) {
+	if v.hides(id) {
+		return object{}, errNoSuchObject
+	}
+	return s.lookupAny(ctx, v, id)
+}
+
+func (s *Server) lookupAny(ctx context.Context, v view, id string) (object, error) {
 	folder := func(title string, kids func() ([]object, error)) (object, error) {
 		items, err := kids()
 		if err != nil {
 			return object{}, err
 		}
-		return object{ID: id, Parent: idRoot, Title: title, Folder: true, Children: len(items), Art: s.folderArt(v, id)}, nil
+		n := 0
+		for _, o := range items {
+			if !v.hides(o.ID) {
+				n++
+			}
+		}
+		return object{ID: id, Parent: idRoot, Title: title, Folder: true, Children: n, Art: s.folderArt(v, id)}, nil
 	}
 	switch {
 	case id == idRoot:

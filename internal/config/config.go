@@ -47,6 +47,14 @@ const (
 	PlaybackKeep  = "keep"  // the DVR is not told
 )
 
+// Kinds say which folders a client is shown: the pictures (live TV,
+// recordings), the Listen folders, or both.
+const (
+	KindBoth  = "both" // the default
+	KindVideo = "video"
+	KindSound = "sound" // a player without a screen
+)
+
 // Audio formats for the Listen folders: a live channel's sound alone.
 const (
 	AudioAAC  = "aac" // AAC in ADTS
@@ -62,6 +70,7 @@ type Audio struct {
 }
 
 type Profile struct {
+	Kind      string    `json:"kind"`
 	Mode      string    `json:"mode"`
 	Ads       string    `json:"ads"`
 	Playback  string    `json:"playback"`
@@ -151,6 +160,9 @@ func DefaultTranscode() Transcode {
 // Fill sets what is missing, so a short config file works.
 func (c *Config) Fill() {
 	fill := func(p *Profile) {
+		if p.Kind == "" {
+			p.Kind = KindBoth
+		}
 		if p.Mode == "" {
 			p.Mode = ModeProxy // works for every TV; direct is an optimization to opt into
 		}
@@ -205,6 +217,11 @@ func (c *Config) Fill() {
 }
 
 func (p Profile) validate() error {
+	switch p.Kind {
+	case "", KindBoth, KindVideo, KindSound: // empty is both, from a file older than the setting
+	default:
+		return fmt.Errorf("kind %q is not both, video or sound", p.Kind)
+	}
 	switch p.Mode {
 	case ModeDirect, ModeProxy, ModeTranscode:
 	default:

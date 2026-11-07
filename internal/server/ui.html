@@ -120,6 +120,7 @@ function sel(obj, key, opts, after) { return el('select', { on: { change: e => {
 function profileForm(p, rerender) {
   const box = el('div');
   box.append(el('div', { class: 'grid' },
+    field('Shows', sel(p, 'kind', [['both', 'Pictures and Listen'], ['video', 'Pictures only (live TV, recordings)'], ['sound', 'Listen only (no screen)']])),
     field('Streams', sel(p, 'mode', [['direct', 'Direct from the DVR'], ['proxy', 'Through the bridge'], ['transcode', 'Converted (ffmpeg)']], rerender)),
     field('Commercials', sel(p, 'ads', [['cut', 'Cut out'], ['keep', 'Play (pass through)']], rerender)),
     field('Resume and watched', sel(p, 'playback', [['share', 'Shared with the DVR'], ['keep', 'Kept here']]))));

@@ -54,6 +54,8 @@ func TestValidate(t *testing.T) {
 		"h264":          func(c *Config) { c.Clients[0].Profile.Transcode.H264Profile = "extended" },
 		"max transcode": func(c *Config) { c.MaxTranscodes = 0 },
 		"recent hours":  func(c *Config) { c.RecentHours = 0 },
+		"kind":          func(c *Config) { c.Clients[0].Profile.Kind = "radio" },
+		"audio kbps":    func(c *Config) { c.Clients[0].Profile.Audio.Kbps = 1000 },
 		"limit width":   func(c *Config) { c.Limits.MaxWidth = 8 },
 	} {
 		c := clone(good)

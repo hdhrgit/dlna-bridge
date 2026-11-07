@@ -113,13 +113,14 @@ func (s *Server) listenSourceFolders(ctx context.Context, v view) ([]object, err
 	return out, nil
 }
 
-// audioArgs has ffmpeg take a stream's sound alone, as a says.
+// audioArgs has ffmpeg take a stream's sound alone, as a says. The input is
+// the DVR's live HLS of the sound, started at its newest segment.
 func audioArgs(a config.Audio, input, userAgent string) []string {
 	args := []string{"-hide_banner", "-loglevel", "error", "-nostdin"}
 	if userAgent != "" {
 		args = append(args, "-user_agent", userAgent)
 	}
-	args = append(args, "-i", input, "-map", "0:a:0", "-vn")
+	args = append(args, "-live_start_index", "-1", "-i", input, "-map", "0:a:0", "-vn")
 	switch a.Format {
 	case config.AudioCopy:
 		return append(args, "-c:a", "copy", "-f", "mpegts", "pipe:1")
@@ -164,7 +165,8 @@ func (s *Server) streamAudio(w http.ResponseWriter, r *http.Request) {
 	w = &countWriter{w, s.jobs.counter(id)}
 	started := time.Now()
 	s.cfg.Logf("listen: %s to %s (%s)", what, ip, name)
-	input := s.cfg.DVR.Base.String() + dvr.LivePath(dev, number)
-	_, msg, err := s.runFFmpeg(w, r, audioArgs(prof.Audio, input, s.agent()), false, what)
+	// The DVR sends the sound alone, so no video crosses the network to be
+	// thrown away here.
+	_, msg, err := s.runFFmpeg(w, r, audioArgs(prof.Audio, s.cfg.DVR.SoundStreamURL(dev, number), s.agent()), false, what)
 	s.cfg.Logf("listen: %s to %s ended after %s: %v %s", what, ip, time.Since(started).Round(time.Second), err, msg)
 }
