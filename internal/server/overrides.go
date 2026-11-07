@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -21,6 +22,9 @@ var overrideParams = []string{"w", "h", "fit", "fps", "vb", "ab"}
 func withOverrides(t config.Transcode, q url.Values, l config.Limits) config.Transcode {
 	num := func(name string, lo, hi int, to *int) bool {
 		n, err := strconv.Atoi(q.Get(name))
+		if errors.Is(err, strconv.ErrRange) && n > 0 {
+			n, err = hi, nil // too many digits for an int: the most
+		}
 		if err != nil || n < 1 {
 			return false
 		}
@@ -46,8 +50,10 @@ func withOverrides(t config.Transcode, q url.Values, l config.Limits) config.Tra
 }
 
 // describeTranscode says what a conversion makes, for the X-Transcode header:
-// "320x180 fit=scale fps=24 vb=400 ab=64". The size is the box the picture is
-// fitted inside for fit=inside.
+// "320x180 fit=scale fps=24 vb=400 ab=64". For fit=inside, a profile that
+// fits the picture inside its size rather than stretching it, the size is that
+// box: the picture's own shape, which ffmpeg learns only once it reads the
+// stream, decides how much of it is used.
 func describeTranscode(t config.Transcode) string {
 	w, h, fit := t.MaxWidth, t.MaxHeight, "inside"
 	if t.ExactSize {

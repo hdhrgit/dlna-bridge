@@ -183,9 +183,11 @@ size (rounded down to even), `fit` either `scale` (stretched to that size) or `c
 stretched), `fps` the most frames per second, `vb` and `ab` the video and audio kbit/s. The rest (codec,
 H.264 profile, slices, small stream, commercials, audio channels) stays the profile's. Values beyond the limits
 under *Other settings* (by default 640x480, 30 fps, 1500 and 128 kbit/s) are held to them; values that are
-not numbers are ignored, as are overrides on a stream that is not converted. `GET /api/caps` lists the
-overrides and the limits, and each converted stream carries what it was made with, e.g.
-`X-Transcode: 320x180 fit=scale fps=24 vb=400 ab=64`.
+not numbers are ignored, as are overrides on a stream that is not converted. A live channel from the DVR's
+small stream gets at most 64 kbit/s audio, which is all that stream has. `GET /api/caps` lists the overrides
+and the limits, and each converted stream carries what it was made with, e.g.
+`X-Transcode: 320x180 fit=scale fps=24 vb=400 ab=64`. For a profile that fits the picture inside its size
+(`fit=inside`), the size given is that box.
 
 ## Commercials
 

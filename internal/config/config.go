@@ -186,8 +186,21 @@ func (c *Config) Fill() {
 	if c.RecentHours == 0 {
 		c.RecentHours = 24
 	}
-	if c.Limits == (Limits{}) {
-		c.Limits = DefaultLimits()
+	d, l := DefaultLimits(), &c.Limits
+	if l.MaxWidth == 0 {
+		l.MaxWidth = d.MaxWidth
+	}
+	if l.MaxHeight == 0 {
+		l.MaxHeight = d.MaxHeight
+	}
+	if l.FPS == 0 {
+		l.FPS = d.FPS
+	}
+	if l.VideoKbps == 0 {
+		l.VideoKbps = d.VideoKbps
+	}
+	if l.AudioKbps == 0 {
+		l.AudioKbps = d.AudioKbps
 	}
 }
 

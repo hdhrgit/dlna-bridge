@@ -46,7 +46,9 @@ func (s *Server) streamLive(w http.ResponseWriter, r *http.Request) {
 	input := s.cfg.DVR.Base.String() + dvr.LivePath(dev, number)
 	if t.PreScale {
 		// The DVR scales the picture down first, which costs it less than
-		// sending the full one for us to decode.
+		// sending the full one for us to decode. Its sound is no better than
+		// SmallStreamAudioKbps, so more would only be bigger.
+		t.AudioKbps = min(t.AudioKbps, dvr.SmallStreamAudioKbps)
 		input = s.cfg.DVR.SmallStreamURL(dev, number, evenCeil(t.MaxHeight), t.VideoKbps*2+t.AudioKbps)
 	}
 	s.transcode(w, r, t, name, number+" "+ch.Name, input, true, 0)

@@ -96,7 +96,6 @@ func (s *Server) transcode(w http.ResponseWriter, r *http.Request, t config.Tran
 	w.Header().Set("Content-Type", tsMIME)
 	w.Header().Set("Cache-Control", "no-cache, no-store")
 	w.Header().Set("TransferMode.DLNA.ORG", "Streaming")
-	w.Header().Set("X-Transcode", describeTranscode(t))
 	byTime := false
 	if _, prof := s.profileFor(r); !live && prof.Seek == config.SeekTime {
 		byTime = true
@@ -128,6 +127,7 @@ func (s *Server) transcode(w http.ResponseWriter, r *http.Request, t config.Tran
 		}
 		w.Header().Set("TimeSeekRange.dlna.org", ans)
 	}
+	w.Header().Set("X-Transcode", describeTranscode(t))
 	if r.Method == http.MethodHead {
 		return
 	}
@@ -135,6 +135,7 @@ func (s *Server) transcode(w http.ResponseWriter, r *http.Request, t config.Tran
 	limit := s.cfg.Settings.MaxTranscodes()
 	id, ok := s.jobs.start(limit, client, ip, r.Header.Get("User-Agent"), what)
 	if !ok {
+		w.Header().Del("X-Transcode")
 		http.Error(w, fmt.Sprintf("already converting %d streams", limit), http.StatusServiceUnavailable)
 		return
 	}

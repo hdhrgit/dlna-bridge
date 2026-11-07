@@ -5,11 +5,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
 	"dlna/internal/config"
+	"dlna/internal/dvr"
 )
 
 // The two board profiles: 240x144 stretched, and the middle 4:3 at 240x192.
@@ -53,10 +56,11 @@ func TestOverrides(t *testing.T) {
 	}{
 		{"", "240x144 fit=scale fps=24 vb=250 ab=64"},
 		{"w=320&h=180&fit=scale&fps=24&vb=400&ab=64", "320x180 fit=scale fps=24 vb=400 ab=64"},
-		{"w=321&h=181", "320x180 fit=scale fps=24 vb=250 ab=64"},                            // down to even
-		{"w=9999&h=9999&fps=60&vb=99999&ab=999", "640x480 fit=scale fps=30 vb=1500 ab=128"}, // clamped to the limits
-		{"w=3&h=1&fps=1&vb=1&ab=1", "16x16 fit=scale fps=1 vb=16 ab=8"},                     // and to the least
-		{"w=abc&h=-5&fps=0&vb=1.5&fit=zoom", "240x144 fit=scale fps=24 vb=250 ab=64"},       // not values: ignored
+		{"w=321&h=181", "320x180 fit=scale fps=24 vb=250 ab=64"},                                                             // down to even
+		{"w=9999&h=9999&fps=60&vb=99999&ab=999", "640x480 fit=scale fps=30 vb=1500 ab=128"},                                  // clamped to the limits
+		{"w=3&h=1&fps=1&vb=1&ab=1", "16x16 fit=scale fps=1 vb=16 ab=8"},                                                      // and to the least
+		{"w=99999999999999999999&vb=99999999999999999999&h=-99999999999999999999", "640x144 fit=scale fps=24 vb=1500 ab=64"}, // too big: the most
+		{"w=abc&h=-5&fps=0&vb=1.5&fit=zoom", "240x144 fit=scale fps=24 vb=250 ab=64"},                                        // not values: ignored
 		{"w=448&h=252&fit=crop43", "448x252 fit=crop43 fps=24 vb=250 ab=64"},
 	} {
 		q, _ := url.ParseQuery(c.query)
@@ -78,8 +82,8 @@ func TestOverrides(t *testing.T) {
 	if got.H264Profile != base.H264Profile || got.SingleSlice != base.SingleSlice || got.PreScale != base.PreScale || got.AudioChannels != base.AudioChannels {
 		t.Errorf("base settings changed: %+v", got)
 	}
-	// Smaller limits from the config.
-	small := config.Limits{MaxWidth: 321, MaxHeight: 200, FPS: 20, VideoKbps: 300, AudioKbps: 48}
+	// Smaller limits from the config, an odd size held to the even below.
+	small := config.Limits{MaxWidth: 321, MaxHeight: 201, FPS: 20, VideoKbps: 300, AudioKbps: 48}
 	q, _ := url.ParseQuery("w=640&h=480&fps=30&vb=1000&ab=128")
 	if got := describeTranscode(withOverrides(base, q, small)); got != "320x200 fit=scale fps=20 vb=300 ab=48" {
 		t.Errorf("small limits: %s", got)
@@ -134,9 +138,67 @@ func TestTranscodeHeader(t *testing.T) {
 	}
 }
 
-// Limits missing from a config file are the defaults; ones out of range are
-// refused like any other setting.
+// A live channel's small stream from the DVR is asked for at the height
+// converted to, and its sound is never converted to more than the DVR sends.
+// The header goes with a stream, not with a refusal.
+func TestLiveOverrides(t *testing.T) {
+	dir := t.TempDir()
+	ff := filepath.Join(dir, "ffmpeg")
+	if err := os.WriteFile(ff, []byte("#!/bin/sh\necho \"$@\" >> "+dir+"/args\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	d := fakeDVR(t)
+	c, err := dvr.New(d.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(Config{DVR: c, FFmpeg: ff, Settings: mustSettings(t, config.Config{MaxTranscodes: 1, Clients: boardClients()}), Logf: func(string, ...any) {}})
+	s := httptest.NewServer(srv.Handler())
+	defer s.Close()
+	get := func(query string) (*http.Response, string) {
+		os.Remove(filepath.Join(dir, "args"))
+		resp, err := http.Get(s.URL + "/stream/live/5000?" + query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		args, _ := os.ReadFile(filepath.Join(dir, "args"))
+		return resp, string(args)
+	}
+	for query, want := range map[string][2]string{
+		"profile=esp32":                           {"240x144 fit=scale fps=24 vb=250 ab=64", "abitrate=64&acodec=aac&bitrate=564&resolution=144&vcodec=h264"},
+		"profile=esp32_4x3":                       {"240x192 fit=crop43 fps=24 vb=250 ab=64", "abitrate=64&acodec=aac&bitrate=564&resolution=192&vcodec=h264"},
+		"profile=esp32&w=320&h=181&vb=400&ab=128": {"320x180 fit=scale fps=24 vb=400 ab=64", "abitrate=64&acodec=aac&bitrate=864&resolution=180&vcodec=h264"},
+	} {
+		resp, args := get(query)
+		if got := resp.Header.Get("X-Transcode"); got != want[0] {
+			t.Errorf("%s: header %q, want %q", query, got, want[0])
+		}
+		if !strings.Contains(args, "/devices/ANY/channels/5000/hls/master.m3u8?"+want[1]+" ") || !strings.Contains(args, " -b:a 64k ") {
+			t.Errorf("%s: args %s", query, args)
+		}
+	}
+	id, _ := srv.jobs.start(1, "other", "", "", "busy")
+	defer srv.jobs.end(id)
+	if resp, _ := get("profile=esp32"); resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get("X-Transcode") != "" {
+		t.Errorf("over the limit: %d %v", resp.StatusCode, resp.Header)
+	}
+}
+
+// Limits missing from a config file are the defaults, each on its own; ones
+// out of range are refused like any other setting.
 func TestLimitsInConfig(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(file, []byte(`{"override_limits":{"max_width":800}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	partial, err := config.Open(file, config.Config{})
+	if err != nil {
+		t.Fatalf("one limit set: %v", err)
+	}
+	if got, want := partial.Limits(), (config.Limits{MaxWidth: 800, MaxHeight: 480, FPS: 30, VideoKbps: 1500, AudioKbps: 128}); got != want {
+		t.Errorf("one limit set: %+v", got)
+	}
 	st := mustSettings(t, config.Config{})
 	if got := st.Limits(); got != config.DefaultLimits() {
 		t.Errorf("default: %+v", got)

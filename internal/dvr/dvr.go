@@ -607,6 +607,9 @@ func (c *Client) ClientInfo(ctx context.Context, id string) (ClientEntry, bool, 
 	return ClientEntry{}, false, nil
 }
 
+// SmallStreamAudioKbps is the sound's bitrate in the DVR's small stream.
+const SmallStreamAudioKbps = 64
+
 // SmallStreamURL asks the DVR's transcoder for a small H.264/AAC HLS stream of
 // a channel. height must be even, and bitrate is the total in kbps.
 func (c *Client) SmallStreamURL(device, number string, height, kbps int) string {
@@ -618,7 +621,7 @@ func (c *Client) SmallStreamURL(device, number string, height, kbps int) string 
 	q.Set("acodec", "aac")
 	q.Set("resolution", strconv.Itoa(height))
 	q.Set("bitrate", strconv.Itoa(kbps))
-	q.Set("abitrate", "64")
+	q.Set("abitrate", strconv.Itoa(SmallStreamAudioKbps))
 	return c.Base.String() + "/devices/" + url.PathEscape(device) + "/channels/" + url.PathEscape(number) + "/hls/master.m3u8?" + q.Encode()
 }
 
