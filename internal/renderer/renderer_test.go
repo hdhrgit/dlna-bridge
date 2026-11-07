@@ -97,6 +97,15 @@ func TestPlaysVideo(t *testing.T) {
 	}
 }
 
+func TestMetaTitle(t *testing.T) {
+	didl := `<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/"><item id="1"><dc:title>News &amp; Weather</dc:title><upnp:class>object.item.videoItem</upnp:class></item></DIDL-Lite>`
+	for in, want := range map[string]string{didl: "News & Weather", "": "", "NOT_IMPLEMENTED": ""} {
+		if got := metaTitle(in); got != want {
+			t.Errorf("metaTitle(%.30q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestTakes(t *testing.T) {
 	r := Renderer{Types: sinkTypes("http-get:*:audio/mpeg:*,http-get:*:audio/vnd.dlna.adts:*,http-get:*:video/mpegurl:*")}
 	if !r.Takes("audio/vnd.dlna.adts") || !r.Takes("Audio/MPEG") || r.Takes("video/mp2t") {

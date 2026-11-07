@@ -38,7 +38,7 @@
   #crumbs a { cursor:pointer; color:var(--accent); } #crumbs span.sep { color:var(--muted); margin:0 6px; }
   #tiles { display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); gap:10px; max-height:520px; overflow:auto; }
   .tile { cursor:pointer; border:1px solid var(--line); border-radius:8px; overflow:hidden; background:var(--bg); }
-  .tile:hover { border-color:var(--accent); } .tile img { width:100%; aspect-ratio:4/3; object-fit:cover; display:block; background:var(--line); }
+  .tile:hover { border-color:var(--accent); } .tile img { width:100%; aspect-ratio:4/3; object-fit:contain; display:block; background:var(--line); }
   .tile div { padding:6px 8px; font-size:13px; line-height:1.3; } .tile small { color:var(--muted); display:block; }
   .ok { color:var(--good); } .err { color:var(--bad); } .tag { font-size:12px; color:var(--muted); border:1px solid var(--line); border-radius:10px; padding:0 8px; }
 </style>
@@ -69,7 +69,7 @@
       <div id="tvbar" title="Click to go there"><div id="tvfill"></div></div>
       <div class="row" style="margin-top:8px">
         <button data-seek="-30" title="Back 30 s">⏪ 30 s</button><button id="tvtoggle" class="primary">⏯</button><button data-seek="30" title="On 30 s">30 s ⏩</button><button data-do="stop" title="Stop">⏹</button>
-        <span id="tvvol" class="row" style="margin-left:auto"><button id="tvmute" title="Mute">🔇</button><input id="tvvolume" type="range" min="0" max="100" style="width:140px"></span>
+        <span id="tvvol" class="row" style="margin-left:auto"><button id="tvmute" title="Mute">🔇</button><input id="tvvolume" type="range" min="0" max="100" step="1" style="width:140px"><span id="tvvolnum" class="muted" style="min-width:2.5em"></span></span>
       </div>
     </div>
   </div>
@@ -247,20 +247,23 @@ async function tvPoll() {
   if (!r.ok) { $('tvstate').textContent = 'not answering'; tvState = null; return; }
   const st = tvState = await r.json();
   const playing = st.state === 'PLAYING';
-  $('tvnow').textContent = tvTitle[tvSel] && st.state !== 'STOPPED' && st.state !== 'NO_MEDIA_PRESENT' ? tvTitle[tvSel] : '';
+  // What the TV says it plays, whoever started it; else what we sent it.
+  $('tvnow').textContent = st.state === 'NO_MEDIA_PRESENT' ? '' : st.title || tvTitle[tvSel] || '';
   const label = { PLAYING: 'playing', PAUSED_PLAYBACK: 'paused', STOPPED: 'stopped', TRANSITIONING: 'starting…', NO_MEDIA_PRESENT: 'idle' }[st.state] || st.state.toLowerCase();
   $('tvstate').textContent = label + (st.duration && st.state !== 'NO_MEDIA_PRESENT' ? ' · ' + clock(st.position) + ' / ' + clock(st.duration) : '');
   $('tvfill').style.width = st.duration ? Math.min(100, 100 * st.position / st.duration) + '%' : '0';
   $('tvtoggle').textContent = playing ? '⏸' : '▶';
   $('tvvol').hidden = st.volume < 0;
-  if (st.volume >= 0 && document.activeElement !== $('tvvolume')) $('tvvolume').value = st.volume;
+  if (st.volume >= 0 && !tvDragging) { $('tvvolume').value = st.volume; $('tvvolnum').textContent = st.volume; }
   $('tvmute').textContent = st.muted ? '🔈' : '🔇';
 }
 $('tvtoggle').onclick = () => tvState && tvDo(tvState.state === 'PLAYING' ? 'pause' : 'resume');
 document.querySelectorAll('[data-do]').forEach(b => b.onclick = () => tvDo(b.dataset.do));
 document.querySelectorAll('[data-seek]').forEach(b => b.onclick = () => tvState && tvDo('seek', { seconds: tvState.position + +b.dataset.seek }));
 $('tvbar').onclick = e => { if (!tvState || !tvState.duration) return; const r = $('tvbar').getBoundingClientRect(); tvDo('seek', { seconds: Math.round((e.clientX - r.left) / r.width * tvState.duration) }); };
-$('tvvolume').onchange = () => tvDo('volume', { level: +$('tvvolume').value });
+let tvDragging = false;
+$('tvvolume').oninput = () => { tvDragging = true; $('tvvolnum').textContent = $('tvvolume').value; };
+$('tvvolume').onchange = async () => { await tvDo('volume', { level: +$('tvvolume').value }); tvDragging = false; $('tvvolume').blur(); };
 $('tvmute').onclick = () => tvState && tvDo('mute', { mute: !tvState.muted });
 
 async function libOpen(i) {

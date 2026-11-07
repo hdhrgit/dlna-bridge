@@ -291,6 +291,7 @@ type State struct {
 	Volume   int    `json:"volume"` // -1 when unknown
 	Muted    bool   `json:"muted"`
 	URI      string `json:"uri"`
+	Title    string `json:"title"` // of what it plays, from its own metadata
 }
 
 func (r Renderer) State(ctx context.Context) (State, error) {
@@ -302,6 +303,7 @@ func (r Renderer) State(ctx context.Context) (State, error) {
 	st.State = ti["CurrentTransportState"]
 	if pi, err := call(ctx, r.avt, avTransport, "GetPositionInfo", [][2]string{instance}); err == nil {
 		st.Position, st.Duration, st.URI = clock(pi["RelTime"]), clock(pi["TrackDuration"]), pi["TrackURI"]
+		st.Title = metaTitle(pi["TrackMetaData"])
 	}
 	if v, err := call(ctx, r.rc, renderingControl, "GetVolume", [][2]string{instance, {"Channel", "Master"}}); err == nil {
 		if n, err := strconv.Atoi(strings.TrimSpace(v["CurrentVolume"])); err == nil {
@@ -312,6 +314,29 @@ func (r Renderer) State(ctx context.Context) (State, error) {
 		st.Muted = strings.TrimSpace(v["CurrentMute"]) == "1"
 	}
 	return st, nil
+}
+
+// metaTitle is the dc:title in a DIDL-Lite text, as a renderer reports what it
+// plays, whoever started it.
+func metaTitle(didl string) string {
+	d := xml.NewDecoder(strings.NewReader(didl))
+	in := false
+	for {
+		tok, err := d.Token()
+		if err != nil {
+			return ""
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			in = t.Name.Local == "title"
+		case xml.CharData:
+			if in {
+				return strings.TrimSpace(string(t))
+			}
+		case xml.EndElement:
+			in = false
+		}
+	}
 }
 
 // SetVolume sets the volume, 0 to 100.

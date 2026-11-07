@@ -46,9 +46,22 @@ func (s *Server) apiBrowse(w http.ResponseWriter, r *http.Request) {
 		Art      string  `json:"art,omitempty"`
 		Duration float64 `json:"duration,omitempty"`
 	}
+	// A channel shows the picture of the show on now, as the page is for
+	// choosing what to watch; the TVs keep the channel logos.
+	var now map[string]string
 	out := []entry{}
+	v := s.viewOf(r)
 	for _, o := range kids {
-		out = append(out, entry{o.ID, o.Title, o.Folder, o.Art, o.Duration})
+		art := o.Art
+		if o.Class == classLive {
+			if now == nil {
+				now, _ = s.cfg.DVR.NowImages(r.Context())
+			}
+			if img := now[o.ChannelNr]; img != "" {
+				art = s.artURL(v, img)
+			}
+		}
+		out = append(out, entry{o.ID, o.Title, o.Folder, art, o.Duration})
 	}
 	writeJSON(w, http.StatusOK, out)
 }

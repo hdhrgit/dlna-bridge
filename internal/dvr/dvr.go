@@ -296,17 +296,41 @@ type nowEntry struct {
 	} `json:"Channel"`
 }
 
-// NowPlaying maps a channel number to the title of the show on now.
-func (c *Client) NowPlaying(ctx context.Context) (map[string]string, error) {
-	entries, err := c.now.get(ctx, time.Minute, c.MaxStale, func(ctx context.Context) ([]nowEntry, error) {
+func (c *Client) guideNow(ctx context.Context) ([]nowEntry, error) {
+	return c.now.get(ctx, time.Minute, c.MaxStale, func(ctx context.Context) ([]nowEntry, error) {
 		var e []nowEntry
 		err := c.getJSON(ctx, "/devices/ANY/guide/now", &e)
 		return e, err
 	})
+}
+
+// NowPlaying maps a channel number to the title of the show on now.
+func (c *Client) NowPlaying(ctx context.Context) (map[string]string, error) {
+	entries, err := c.guideNow(ctx)
 	if err != nil {
 		return nil, err
 	}
 	return nowTitles(entries, time.Now()), nil
+}
+
+// NowImages maps a channel number to the guide's picture of the show on now,
+// where it has one.
+func (c *Client) NowImages(ctx context.Context) (map[string]string, error) {
+	entries, err := c.guideNow(ctx)
+	if err != nil {
+		return nil, err
+	}
+	t := time.Now().Unix()
+	out := map[string]string{}
+	for _, e := range entries {
+		for _, a := range e.Airings {
+			if a.Time <= t && float64(t) < float64(a.Time)+a.Duration && a.Image != "" {
+				out[e.Channel.Number] = a.Image
+				break
+			}
+		}
+	}
+	return out, nil
 }
 
 func nowTitles(entries []nowEntry, at time.Time) map[string]string {
