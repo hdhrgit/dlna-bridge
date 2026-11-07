@@ -167,13 +167,13 @@ func browse(t *testing.T, base, id, flag string, start, count int) (browseResult
 func TestBrowseRoot(t *testing.T) {
 	s := newTestServer(t, false)
 	br, d := browse(t, s.URL, "0", "BrowseDirectChildren", 0, 0)
-	if br.TotalMatches != 7 || len(d.Containers) != 7 {
+	if br.TotalMatches != 9 || len(d.Containers) != 9 {
 		t.Fatalf("root: %+v", d)
 	}
 	for i, want := range []struct {
 		title string
 		kids  int
-	}{{"Live TV", 3}, {"Favorites", 1}, {"Recent recordings", 3}, {"TV Shows", 3}, {"Movies", 1}, {"Recording now", 1}, {"Channels by source", 2}} {
+	}{{"Live TV", 3}, {"Favorites", 1}, {"Recent recordings", 3}, {"TV Shows", 3}, {"Movies", 1}, {"Recording now", 1}, {"Channels by source", 2}, {"Listen", 3}, {"Listen by source", 2}} {
 		if got := d.Containers[i]; got.Title != want.title || got.ChildCount != want.kids {
 			t.Errorf("folder %d: %+v, want %s with %d", i, got, want.title, want.kids)
 		}
@@ -181,6 +181,30 @@ func TestBrowseRoot(t *testing.T) {
 	_, meta := browse(t, s.URL, "0", "BrowseMetadata", 0, 0)
 	if len(meta.Containers) != 1 || meta.Containers[0].Title != "Test DVR" {
 		t.Errorf("root metadata: %+v", meta)
+	}
+}
+
+// Listen lists the channels as sound in the client's audio format, by source
+// too; ffmpeg takes the sound alone, converted or copied.
+func TestListen(t *testing.T) {
+	s := newServerWith(t, config.Config{Default: config.Profile{Mode: config.ModeProxy, Audio: config.Audio{Format: config.AudioMP3, Kbps: 96, Channels: 1}}})
+	_, d := browse(t, s.URL, "listen", "BrowseDirectChildren", 0, 0)
+	if len(d.Items) != 3 || d.Items[0].Class != "object.item.audioItem.audioBroadcast" || !strings.Contains(d.Items[0].Res.Protocol, "audio/mpeg:DLNA.ORG_PN=MP3") || !strings.Contains(d.Items[0].Res.URL, "/stream/audio/") {
+		t.Fatalf("listen: %+v", d.Items)
+	}
+	_, d = browse(t, s.URL, "listensrc", "BrowseDirectChildren", 0, 0)
+	if len(d.Containers) != 2 {
+		t.Fatalf("listen by source: %+v", d.Containers)
+	}
+	_, d = browse(t, s.URL, d.Containers[0].ID, "BrowseDirectChildren", 0, 0)
+	if len(d.Items) == 0 || !strings.Contains(d.Items[0].Res.URL, "dev=") {
+		t.Errorf("a source's channels: %+v", d.Items)
+	}
+	for format, want := range map[string]string{config.AudioAAC: "-c:a aac -f adts -b:a 96k -ac 1", config.AudioMP3: "-c:a libmp3lame -f mp3 -b:a 96k -ac 1", config.AudioCopy: "-c:a copy -f mpegts pipe:1"} {
+		args := strings.Join(audioArgs(config.Audio{Format: format, Kbps: 96, Channels: 1}, "in", ""), " ")
+		if !strings.Contains(args, "-map 0:a:0 -vn") || !strings.Contains(args, want) {
+			t.Errorf("%s: %s", format, args)
+		}
 	}
 }
 

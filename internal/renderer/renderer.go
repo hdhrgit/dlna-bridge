@@ -19,8 +19,9 @@ import (
 )
 
 const (
-	avTransport      = "urn:schemas-upnp-org:service:AVTransport:1"
-	renderingControl = "urn:schemas-upnp-org:service:RenderingControl:1"
+	avTransport       = "urn:schemas-upnp-org:service:AVTransport:1"
+	renderingControl  = "urn:schemas-upnp-org:service:RenderingControl:1"
+	connectionManager = "urn:schemas-upnp-org:service:ConnectionManager:1"
 )
 
 // Renderer is one device that plays what it is told to.
@@ -29,8 +30,11 @@ type Renderer struct {
 	Name  string `json:"name"`
 	Model string `json:"model"`
 	IP    string `json:"ip"`
-	avt   string // control URLs
-	rc    string
+	// AudioOnly says it takes no video: a speaker, a receiver.
+	AudioOnly bool   `json:"audio_only"`
+	avt       string // control URLs
+	rc        string
+	cm        string
 }
 
 // A TV can take a while to answer while it switches what it plays.
@@ -123,10 +127,16 @@ func describe(ctx context.Context, loc, ip string) (Renderer, error) {
 			r.avt = u.String()
 		case strings.HasPrefix(s.Type, "urn:schemas-upnp-org:service:RenderingControl:"):
 			r.rc = u.String()
+		case strings.HasPrefix(s.Type, "urn:schemas-upnp-org:service:ConnectionManager:"):
+			r.cm = u.String()
 		}
 	}
 	if r.ID == "" || r.avt == "" {
 		return Renderer{}, errors.New("no AVTransport")
+	}
+	// What it plays: a sink list with no video in it is a player for sound.
+	if v, err := call(ctx, r.cm, connectionManager, "GetProtocolInfo", nil); err == nil && v["Sink"] != "" {
+		r.AudioOnly = !strings.Contains(v["Sink"], "video/")
 	}
 	return r, nil
 }

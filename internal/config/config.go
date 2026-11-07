@@ -47,12 +47,27 @@ const (
 	PlaybackKeep  = "keep"  // the DVR is not told
 )
 
+// Audio formats for the Listen folders: a live channel's sound alone.
+const (
+	AudioAAC  = "aac" // AAC in ADTS
+	AudioMP3  = "mp3"
+	AudioCopy = "copy" // the channel's own sound, unconverted, in MPEG-TS
+)
+
+// Audio is what a client gets from the Listen folders.
+type Audio struct {
+	Format   string `json:"format"`
+	Kbps     int    `json:"kbps"`
+	Channels int    `json:"channels"`
+}
+
 type Profile struct {
 	Mode      string    `json:"mode"`
 	Ads       string    `json:"ads"`
 	Playback  string    `json:"playback"`
 	Seek      string    `json:"seek"`
 	Transcode Transcode `json:"transcode"`
+	Audio     Audio     `json:"audio"`
 }
 
 // Transcode is what a client in transcode mode gets: the picture fitted inside
@@ -132,6 +147,15 @@ func (c *Config) Fill() {
 		if p.Seek == "" {
 			p.Seek = SeekBytes
 		}
+		if p.Audio.Format == "" {
+			p.Audio.Format = AudioAAC
+		}
+		if p.Audio.Kbps == 0 {
+			p.Audio.Kbps = 128
+		}
+		if p.Audio.Channels == 0 {
+			p.Audio.Channels = 2
+		}
 		if p.Transcode == (Transcode{}) {
 			p.Transcode = DefaultTranscode()
 		}
@@ -158,6 +182,14 @@ func (p Profile) validate() error {
 	case AdsCut, AdsKeep:
 	default:
 		return fmt.Errorf("ads %q is not cut or keep", p.Ads)
+	}
+	switch a := p.Audio; {
+	case a.Format != "" && a.Format != AudioAAC && a.Format != AudioMP3 && a.Format != AudioCopy:
+		return fmt.Errorf("audio format %q is not aac, mp3 or copy", a.Format)
+	case a.Kbps != 0 && (a.Kbps < 32 || a.Kbps > 320):
+		return errors.New("audio kbps must be between 32 and 320")
+	case a.Channels != 0 && (a.Channels < 1 || a.Channels > 6):
+		return errors.New("audio channels must be between 1 and 6")
 	}
 	switch p.Playback {
 	case "", PlaybackShare, PlaybackKeep:

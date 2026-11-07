@@ -99,7 +99,7 @@ func (s *Server) children(ctx context.Context, v view, id string) ([]object, err
 	switch {
 	case id == idRoot:
 		var out []object
-		for _, f := range []string{idLive, idFavorites, idRecent, idRecordings, idMovies, idRecNow, idSources} {
+		for _, f := range []string{idLive, idFavorites, idRecent, idRecordings, idMovies, idRecNow, idSources, idListen, idListenSources} {
 			o, err := s.lookup(ctx, v, f)
 			if err == errNoSuchObject {
 				continue // no favorites, no movies, or nothing recording
@@ -116,6 +116,18 @@ func (s *Server) children(ctx context.Context, v view, id string) ([]object, err
 		return s.sourceFolders(ctx, v)
 	case strings.HasPrefix(id, "src/"):
 		return s.sourceItems(ctx, v, strings.TrimPrefix(id, "src/"))
+	case id == idListen:
+		return s.listenItems(ctx, v, "")
+	case id == idListenSources:
+		return s.listenSourceFolders(ctx, v)
+	case strings.HasPrefix(id, "lsrc/"):
+		src, err := url.PathUnescape(strings.TrimPrefix(id, "lsrc/"))
+		if err != nil {
+			return nil, errNoSuchObject
+		}
+		return s.listenItems(ctx, v, src)
+	case strings.HasPrefix(id, "listen/"), strings.HasPrefix(id, "lsrcch/"):
+		return nil, nil
 	case id == idRecordings:
 		folders, _, err := s.recordingTree(ctx, v)
 		return folders, err
@@ -173,6 +185,36 @@ func (s *Server) lookup(ctx context.Context, v view, id string) (object, error) 
 		return o, err
 	case id == idSources:
 		return folder("Channels by source", s.sourceFoldersFn(ctx, v))
+	case id == idListen:
+		return folder("Listen", func() ([]object, error) { return s.listenItems(ctx, v, "") })
+	case id == idListenSources:
+		return folder("Listen by source", func() ([]object, error) { return s.listenSourceFolders(ctx, v) })
+	case strings.HasPrefix(id, "lsrc/"):
+		folders, err := s.listenSourceFolders(ctx, v)
+		if err != nil {
+			return object{}, err
+		}
+		return find(folders, id)
+	case strings.HasPrefix(id, "listen/"):
+		items, err := s.listenItems(ctx, v, "")
+		if err != nil {
+			return object{}, err
+		}
+		return find(items, id)
+	case strings.HasPrefix(id, "lsrcch/"):
+		src, _, ok := strings.Cut(strings.TrimPrefix(id, "lsrcch/"), "/")
+		if !ok {
+			return object{}, errNoSuchObject
+		}
+		src, err := url.PathUnescape(src)
+		if err != nil {
+			return object{}, errNoSuchObject
+		}
+		items, err := s.listenItems(ctx, v, src)
+		if err != nil {
+			return object{}, err
+		}
+		return find(items, id)
 	case strings.HasPrefix(id, "src/"):
 		folders, err := s.sourceFolders(ctx, v)
 		if err != nil {

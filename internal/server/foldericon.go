@@ -23,13 +23,15 @@ type folderIcon struct {
 }
 
 var folderIcons = map[string]folderIcon{
-	idLive:       {bg: color.RGBA{0x24, 0x57, 0xd6, 0xff}, sign: tvSign},
-	idFavorites:  {bg: color.RGBA{0xd9, 0x8c, 0x0b, 0xff}, sign: starSign},
-	idRecent:     {bg: color.RGBA{0x1b, 0x7a, 0x3b, 0xff}, sign: clockSign},
-	idRecordings: {bg: color.RGBA{0x6a, 0x3d, 0xc4, 0xff}, sign: showsSign},
-	idMovies:     {bg: color.RGBA{0x9b, 0x2c, 0x2c, 0xff}, sign: filmSign},
-	idRecNow:     {bg: color.RGBA{0x30, 0x34, 0x3c, 0xff}, sign: recordSign, fg: color.RGBA{0xe5, 0x39, 0x35, 0xff}},
-	idSources:    {bg: color.RGBA{0x0b, 0x7d, 0x8c, 0xff}, sign: towerSign},
+	idLive:          {bg: color.RGBA{0x24, 0x57, 0xd6, 0xff}, sign: tvSign},
+	idFavorites:     {bg: color.RGBA{0xd9, 0x8c, 0x0b, 0xff}, sign: starSign},
+	idRecent:        {bg: color.RGBA{0x1b, 0x7a, 0x3b, 0xff}, sign: clockSign},
+	idRecordings:    {bg: color.RGBA{0x6a, 0x3d, 0xc4, 0xff}, sign: showsSign},
+	idMovies:        {bg: color.RGBA{0x9b, 0x2c, 0x2c, 0xff}, sign: filmSign},
+	idRecNow:        {bg: color.RGBA{0x30, 0x34, 0x3c, 0xff}, sign: recordSign, fg: color.RGBA{0xe5, 0x39, 0x35, 0xff}},
+	idSources:       {bg: color.RGBA{0x0b, 0x7d, 0x8c, 0xff}, sign: towerSign},
+	idListen:        {bg: color.RGBA{0xc2, 0x3b, 0x7a, 0xff}, sign: noteSign},
+	idListenSources: {bg: color.RGBA{0x8a, 0x2b, 0x5a, 0xff}, sign: noteSign},
 }
 
 // folderIconImage draws a folder's icon, with each pixel's share of the sign
@@ -135,6 +137,14 @@ func filmSign(x, y float64) bool {
 // A record dot inside a ring.
 func recordSign(x, y float64) bool {
 	return inCircle(x, y, .5, .5, .16) || (inCircle(x, y, .5, .5, .3) && !inCircle(x, y, .5, .5, .25))
+}
+
+// A pair of notes.
+func noteSign(x, y float64) bool {
+	heads := inCircle(x, y, .34, .7, .09) || inCircle(x, y, .64, .64, .09)
+	stems := inRect(x, y, .405, .26, .45, .7) || inRect(x, y, .705, .2, .75, .64)
+	beam := inPolygon(x, y, [][2]float64{{.405, .26}, {.75, .2}, {.75, .29}, {.405, .35}})
+	return heads || stems || beam
 }
 
 // A mast sending.

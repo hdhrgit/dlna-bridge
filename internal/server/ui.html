@@ -121,6 +121,10 @@ function profileForm(p, rerender) {
     field('Streams', sel(p, 'mode', [['direct', 'Direct from the DVR'], ['proxy', 'Through the bridge'], ['transcode', 'Converted (ffmpeg)']], rerender)),
     field('Commercials', sel(p, 'ads', [['cut', 'Cut out'], ['keep', 'Play (pass through)']], rerender)),
     field('Resume and watched', sel(p, 'playback', [['share', 'Shared with the DVR'], ['keep', 'Kept here']]))));
+  if (!p.audio) p.audio = { format: 'aac', kbps: 128, channels: 2 };
+  box.append(el('div', { class: 'grid' },
+    field('Listen: sound as', sel(p.audio, 'format', [['aac', 'AAC'], ['mp3', 'MP3'], ['copy', 'Pass through (unconverted)']], rerender)),
+    ...(p.audio.format === 'copy' ? [] : [field('Listen: kbps', num(p.audio, 'kbps', 32, 320)), field('Listen: channels', num(p.audio, 'channels', 1, 6))])));
   if (p.ads === 'cut' || p.mode === 'transcode') {
     if (!p.seek || p.seek === 'none') p.seek = 'bytes';
     const bytes = p.mode === 'transcode' ? 'By bytes: converted recordings do not seek' : 'By bytes: every TV, starts after the cuts are worked out';
@@ -227,7 +231,7 @@ async function tvLook(refresh) {
   tvRender(); tvPoll();
 }
 function tvRender() {
-  $('tvs').replaceChildren(...tvs.map(t => el('button', { class: 'tvchip' + (t.id === tvSel ? ' on' : ''), title: t.model + ', ' + t.ip, on: { click: () => { tvSel = t.id; tvState = null; tvRender(); tvPoll(); } } }, t.name)),
+  $('tvs').replaceChildren(...tvs.map(t => el('button', { class: 'tvchip' + (t.id === tvSel ? ' on' : ''), title: t.model + ', ' + t.ip + (t.audio_only ? ', sound only: plays live channels as sound' : ''), on: { click: () => { tvSel = t.id; tvState = null; tvRender(); tvPoll(); } } }, t.name + (t.audio_only ? ' ♪' : ''))),
     el('button', { title: 'Look for TVs again', on: { click: () => tvLook(true) } }, '↻'), tvs.length ? '' : el('span', { class: 'muted' }, 'No TVs found. Are they on?'));
   $('remote').hidden = !tvSel;
 }

@@ -149,6 +149,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /ctl/ConnectionManager", s.connectionManager)
 	mux.HandleFunc("/evt/{service}", s.events)
 	mux.HandleFunc("GET /stream/live/{number}", s.streamLive)
+	mux.HandleFunc("GET /stream/audio/{number}", s.streamAudio)
 	mux.HandleFunc("GET /stream/rec/{id}", s.streamRecording)
 	mux.HandleFunc("GET /stream/adfree/{id}", s.streamAdFree)
 	return logRequests(s.cfg.Logf, s.cfg.Version, s.who, mux)

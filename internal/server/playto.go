@@ -129,6 +129,19 @@ func (s *Server) playOn(r *http.Request, rd renderer.Renderer, id string) error 
 	}
 	name, prof := s.cfg.Settings.Match(ip, ua, "")
 	v := view{host: host, name: name, prof: prof}
+	if rd.AudioOnly {
+		// A player for sound gets a channel's sound: its Listen item.
+		switch {
+		case strings.HasPrefix(id, "live/"), strings.HasPrefix(id, "fav/"):
+			_, n, _ := strings.Cut(id, "/")
+			id = idListen + "/" + n
+		case strings.HasPrefix(id, "srcch/"):
+			id = "lsrcch/" + strings.TrimPrefix(id, "srcch/")
+		case strings.HasPrefix(id, "listen/"), strings.HasPrefix(id, "lsrcch/"):
+		default:
+			return errString(rd.Name + " plays sound only: pick a live channel")
+		}
+	}
 	o, err := s.lookup(r.Context(), v, id)
 	if err != nil || o.Folder || o.URL == "" {
 		return errString("nothing to play there")

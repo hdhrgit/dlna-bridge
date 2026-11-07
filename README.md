@@ -139,6 +139,9 @@ names it by that TV's own address.
   seek like the shows. Left out when there are none.
 * **Search**: TVs that search (UPnP Search) find channels, episodes and movies by title, class, description
   or channel. Episodes come back titled with their show.
+* **Listen** and **Listen by source**: the live channels as sound alone, for players without a screen, in the
+  client's audio format: AAC, MP3, or the channel's own sound unconverted (MPEG-TS). Converted by ffmpeg, counted
+  among the conversions at once.
 * **Recording now**: what the DVR has not finished recording, from the start. Left out when nothing is.
 
 TVs keep the lists they have browsed. The bridge follows the DVR's own event stream (`/dvr/events/subscribe`),
