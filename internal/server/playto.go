@@ -122,13 +122,20 @@ func (s *Server) playOn(r *http.Request, rd renderer.Renderer, id string) error 
 		return errString("open this page by the bridge's LAN address, so the TV can reach the address it is given")
 	}
 	ip := net.ParseIP(rd.IP)
-	ua := ""
-	for _, c := range s.clients.list() {
-		if c.IP == rd.IP {
-			ua = c.UserAgent
+	// Its client: by address, or by any User-Agent it has used (a speaker
+	// browses as one program and fetches as another).
+	name, prof := s.cfg.Settings.Match(ip, "", "")
+	if name == "" {
+		for _, c := range s.clients.list() {
+			if c.IP != rd.IP {
+				continue
+			}
+			if n, p := s.cfg.Settings.Match(ip, c.UserAgent, ""); n != "" {
+				name, prof = n, p
+				break
+			}
 		}
 	}
-	name, prof := s.cfg.Settings.Match(ip, ua, "")
 	v := view{host: host, name: name, prof: prof}
 	if rd.AudioOnly {
 		// A player for sound gets a channel's sound: its Listen item.
@@ -149,6 +156,9 @@ func (s *Server) playOn(r *http.Request, rd renderer.Renderer, id string) error 
 	o, err := s.lookup(r.Context(), v, id)
 	if err != nil || o.Folder || o.URL == "" {
 		return errString("nothing to play there")
+	}
+	if parts := strings.Split(o.Protocol, ":"); len(parts) >= 3 && !rd.Takes(parts[2]) {
+		return errString(rd.Name + " does not play " + parts[2] + "; set its client's format (for sound: AAC or MP3)")
 	}
 	s.cfg.Logf("play on %s (%s): %s", rd.Name, rd.IP, o.Title)
 	if err := rd.Play(r.Context(), o.URL, didl([]object{o})); err != nil {

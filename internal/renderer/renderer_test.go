@@ -96,3 +96,13 @@ func TestPlaysVideo(t *testing.T) {
 		}
 	}
 }
+
+func TestTakes(t *testing.T) {
+	r := Renderer{Types: sinkTypes("http-get:*:audio/mpeg:*,http-get:*:audio/vnd.dlna.adts:*,http-get:*:video/mpegurl:*")}
+	if !r.Takes("audio/vnd.dlna.adts") || !r.Takes("Audio/MPEG") || r.Takes("video/mp2t") {
+		t.Errorf("takes: %v", r.Types)
+	}
+	if !(Renderer{}).Takes("video/mp2t") {
+		t.Error("a player that did not say should be tried")
+	}
+}

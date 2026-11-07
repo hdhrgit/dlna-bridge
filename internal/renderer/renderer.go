@@ -31,10 +31,12 @@ type Renderer struct {
 	Model string `json:"model"`
 	IP    string `json:"ip"`
 	// AudioOnly says it takes no video: a speaker, a receiver.
-	AudioOnly bool   `json:"audio_only"`
-	avt       string // control URLs
-	rc        string
-	cm        string
+	AudioOnly bool `json:"audio_only"`
+	// Types are the MIME types it says it plays; empty when it did not say.
+	Types []string `json:"-"`
+	avt   string   // control URLs
+	rc    string
+	cm    string
 }
 
 // A TV can take a while to answer while it switches what it plays.
@@ -137,6 +139,7 @@ func describe(ctx context.Context, loc, ip string) (Renderer, error) {
 	// What it plays: a sink list with no video in it is a player for sound.
 	if v, err := call(ctx, r.cm, connectionManager, "GetProtocolInfo", nil); err == nil && v["Sink"] != "" {
 		r.AudioOnly = !playsVideo(v["Sink"])
+		r.Types = sinkTypes(v["Sink"])
 	}
 	return r, nil
 }
@@ -151,6 +154,32 @@ func playsVideo(sink string) bool {
 		}
 		mime := strings.ToLower(strings.TrimSpace(parts[2]))
 		if strings.HasPrefix(mime, "video/") && !strings.Contains(mime, "mpegurl") || mime == "*" {
+			return true
+		}
+	}
+	return false
+}
+
+// sinkTypes are the MIME types in a sink protocol list, lower case.
+func sinkTypes(sink string) []string {
+	var out []string
+	for _, p := range strings.Split(sink, ",") {
+		if parts := strings.Split(p, ":"); len(parts) >= 3 {
+			out = append(out, strings.ToLower(strings.TrimSpace(parts[2])))
+		}
+	}
+	return out
+}
+
+// Takes says whether it plays a MIME type, as far as it said: true when it
+// did not say, or listed "*".
+func (r Renderer) Takes(mime string) bool {
+	if len(r.Types) == 0 {
+		return true
+	}
+	mime = strings.ToLower(mime)
+	for _, t := range r.Types {
+		if t == "*" || t == mime {
 			return true
 		}
 	}
