@@ -125,6 +125,22 @@ type Config struct {
 	MaxTranscodes int `json:"max_transcodes"`
 	// RecentHours is how far back the Recent recordings folder reaches.
 	RecentHours int `json:"recent_hours"`
+	// Limits bound what a stream request may ask for over its profile.
+	Limits Limits `json:"override_limits"`
+}
+
+// Limits are the most a stream request may ask for with w, h, fps, vb and ab.
+type Limits struct {
+	MaxWidth  int `json:"max_width"`
+	MaxHeight int `json:"max_height"`
+	FPS       int `json:"fps"`
+	VideoKbps int `json:"video_kbps"`
+	AudioKbps int `json:"audio_kbps"`
+}
+
+// DefaultLimits are the limits when the config file has none.
+func DefaultLimits() Limits {
+	return Limits{MaxWidth: 640, MaxHeight: 480, FPS: 30, VideoKbps: 1500, AudioKbps: 128}
 }
 
 // DefaultTranscode is a start for a small screen.
@@ -169,6 +185,9 @@ func (c *Config) Fill() {
 	}
 	if c.RecentHours == 0 {
 		c.RecentHours = 24
+	}
+	if c.Limits == (Limits{}) {
+		c.Limits = DefaultLimits()
 	}
 }
 
@@ -237,6 +256,16 @@ func (c *Config) Validate() error {
 	}
 	if c.RecentHours < 1 || c.RecentHours > 24*365 {
 		return errors.New("recent hours must be 1 to 8760")
+	}
+	switch l := c.Limits; {
+	case l.MaxWidth < 16 || l.MaxWidth > 7680 || l.MaxHeight < 16 || l.MaxHeight > 4320:
+		return errors.New("override size limit must be between 16 and 7680 x 4320")
+	case l.FPS < 1 || l.FPS > 120:
+		return errors.New("override fps limit must be 1 to 120")
+	case l.VideoKbps < 16 || l.VideoKbps > 100000:
+		return errors.New("override video kbps limit must be 16 to 100000")
+	case l.AudioKbps < 8 || l.AudioKbps > 640:
+		return errors.New("override audio kbps limit must be 8 to 640")
 	}
 	names := map[string]bool{}
 	for i, cl := range c.Clients {
@@ -406,6 +435,12 @@ func (s *Store) RecentHours() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.cfg.RecentHours
+}
+
+func (s *Store) Limits() Limits {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.cfg.Limits
 }
 
 func (s *Store) MaxTranscodes() int {

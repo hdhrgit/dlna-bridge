@@ -120,6 +120,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.ui)
 	mux.HandleFunc("GET /api/state", s.apiState)
+	mux.HandleFunc("GET /api/caps", s.apiCaps)
 	mux.HandleFunc("GET /api/log", s.apiLog)
 	mux.HandleFunc("GET /api/renderers", s.apiRenderers)
 	mux.HandleFunc("GET /api/browse", s.apiBrowse)

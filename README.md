@@ -177,6 +177,16 @@ Each client and the default have a **profile**:
 At most *Conversions at once* run, across all clients; the rest get a 503. Each viewer has an ffmpeg of their
 own, which stops when they leave.
 
+A converted stream (`/stream/live/N`, `/stream/rec/ID`, `/stream/adfree/ID`) can change its profile's picture
+and sound for one request, e.g. `?profile=NAME&w=320&h=180&fit=scale&fps=24&vb=400&ab=64`: `w` and `h` the
+size (rounded down to even), `fit` either `scale` (stretched to that size) or `crop43` (the middle 4:3, then
+stretched), `fps` the most frames per second, `vb` and `ab` the video and audio kbit/s. The rest (codec,
+H.264 profile, slices, small stream, commercials, audio channels) stays the profile's. Values beyond the limits
+under *Other settings* (by default 640x480, 30 fps, 1500 and 128 kbit/s) are held to them; values that are
+not numbers are ignored, as are overrides on a stream that is not converted. `GET /api/caps` lists the
+overrides and the limits, and each converted stream carries what it was made with, e.g.
+`X-Transcode: 320x180 fit=scale fps=24 vb=400 ab=64`.
+
 ## Commercials
 
 DLNA has no way to tell a TV to skip a stretch, so the bridge leaves the breaks out. Once the DVR has finished a

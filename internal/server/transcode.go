@@ -96,6 +96,7 @@ func (s *Server) transcode(w http.ResponseWriter, r *http.Request, t config.Tran
 	w.Header().Set("Content-Type", tsMIME)
 	w.Header().Set("Cache-Control", "no-cache, no-store")
 	w.Header().Set("TransferMode.DLNA.ORG", "Streaming")
+	w.Header().Set("X-Transcode", describeTranscode(t))
 	byTime := false
 	if _, prof := s.profileFor(r); !live && prof.Seek == config.SeekTime {
 		byTime = true
@@ -144,7 +145,7 @@ func (s *Server) transcode(w http.ResponseWriter, r *http.Request, t config.Tran
 	if start > 0 {
 		what += fmt.Sprintf(" from %s", time.Duration(start*float64(time.Second)).Round(time.Second))
 	}
-	s.cfg.Logf("transcode: %s to %s (%s)", what, ip, client)
+	s.cfg.Logf("transcode: %s to %s (%s, %s)", what, ip, client, describeTranscode(t))
 	args := ffmpegArgs(t, input, live && strings.Contains(input, ".m3u8"), s.agent(), start)
 	if live {
 		setSendBuffer(r, liveSendBuffer)

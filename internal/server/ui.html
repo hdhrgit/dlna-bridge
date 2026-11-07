@@ -102,6 +102,8 @@
     <div><label for="max">Conversions at once, across all clients</label><input id="max" type="number" min="1" max="64"></div>
     <div><label for="recent">Recent recordings reach back (hours)</label><input id="recent" type="number" min="1" max="8760"></div>
   </div>
+  <p>A converted stream can ask for its own picture with <code>w</code>, <code>h</code>, <code>fit</code>, <code>fps</code>, <code>vb</code> and <code>ab</code>; these are the most it may ask for.</p>
+  <div id="limits" class="card grid"></div>
 </main>
 <div class="bar"><div class="inner"><button class="primary" id="save">Save</button><span id="msg"></span></div></div>
 
@@ -152,6 +154,9 @@ function profileForm(p, rerender) {
 
 function render() {
   $('max').value = cfg.max_transcodes; $('recent').value = cfg.recent_hours;
+  const l = cfg.override_limits;
+  $('limits').replaceChildren(field('Width', num(l, 'max_width', 16, 7680)), field('Height', num(l, 'max_height', 16, 4320)), field('Frames a second', num(l, 'fps', 1, 120)),
+    field('Video kbit/s', num(l, 'video_kbps', 16, 100000)), field('Audio kbit/s', num(l, 'audio_kbps', 8, 640)));
   const d = $('default'); d.replaceChildren(el('div', { class: 'card' }, profileForm(cfg.default, render)));
   const c = $('clients'); c.replaceChildren();
   cfg.clients.forEach((cl, i) => c.append(el('div', { class: 'card' },

@@ -14,12 +14,17 @@ import (
 )
 
 // profileFor finds how to serve the request's client. ?profile=<client name>
-// picks one by name, for devices that cannot be told apart by address.
+// picks one by name, for devices that cannot be told apart by address. A
+// converting profile takes the request's overrides (see withOverrides).
 func (s *Server) profileFor(r *http.Request) (string, config.Profile) {
 	host := s.clientIP(r)
 	ua := r.Header.Get("User-Agent")
-	name, prof := s.cfg.Settings.Match(net.ParseIP(host), ua, r.URL.Query().Get("profile"))
+	q := r.URL.Query()
+	name, prof := s.cfg.Settings.Match(net.ParseIP(host), ua, q.Get("profile"))
 	s.clients.note(host, ua, name)
+	if prof.Mode == config.ModeTranscode {
+		prof.Transcode = withOverrides(prof.Transcode, q, s.cfg.Settings.Limits())
+	}
 	return name, prof
 }
 
