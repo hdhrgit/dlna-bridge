@@ -122,7 +122,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/state", s.apiState)
 	mux.HandleFunc("GET /api/log", s.apiLog)
 	mux.HandleFunc("GET /api/renderers", s.apiRenderers)
-	mux.HandleFunc("GET /api/items", s.apiItems)
+	mux.HandleFunc("GET /api/browse", s.apiBrowse)
 	mux.HandleFunc("GET /api/renderers/{id}", s.apiRenderer)
 	mux.HandleFunc("POST /api/renderers/{id}/{do}", s.apiRenderer)
 	mux.HandleFunc("PUT /api/config", s.apiSetConfig)

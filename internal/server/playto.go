@@ -26,30 +26,28 @@ func (s *Server) apiRenderers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
-// apiItems lists what can be played from a folder: Live TV, Recent
-// recordings, Movies.
-func (s *Server) apiItems(w http.ResponseWriter, r *http.Request) {
-	folder := r.URL.Query().Get("folder")
-	switch folder {
-	case idLive, idFavorites, idRecent, idMovies, idRecNow:
-	default:
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no such folder"})
-		return
+// apiBrowse lists a folder for the page's library: its folders and items, with
+// their pictures, as a TV browsing it would see them.
+func (s *Server) apiBrowse(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		id = idRoot
 	}
-	kids, err := s.children(r.Context(), s.viewOf(r), folder)
+	kids, err := s.children(r.Context(), s.viewOf(r), id)
 	if err != nil {
 		writeJSON(w, http.StatusOK, []any{})
 		return
 	}
-	type item struct {
-		ID    string `json:"id"`
-		Title string `json:"title"`
+	type entry struct {
+		ID       string  `json:"id"`
+		Title    string  `json:"title"`
+		Folder   bool    `json:"folder"`
+		Art      string  `json:"art,omitempty"`
+		Duration float64 `json:"duration,omitempty"`
 	}
-	out := []item{}
+	out := []entry{}
 	for _, o := range kids {
-		if !o.Folder {
-			out = append(out, item{o.ID, o.Title})
-		}
+		out = append(out, entry{o.ID, o.Title, o.Folder, o.Art, o.Duration})
 	}
 	writeJSON(w, http.StatusOK, out)
 }

@@ -82,7 +82,6 @@ func (s *Server) serveArt(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
-		s.cfg.Logf("art: made %s for %s, %d bytes", key, s.who(r), len(data))
 		a.mu.Lock()
 		if a.made == nil {
 			a.made, a.lru = map[string]*list.Element{}, list.New()

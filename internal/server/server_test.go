@@ -1978,3 +1978,37 @@ func TestPlaybackSync(t *testing.T) {
 		t.Errorf("kept here, but told the DVR %v", p)
 	}
 }
+
+// The page's library lists a folder with its folders, items and pictures.
+func TestAPIBrowse(t *testing.T) {
+	s := newTestServer(t, false)
+	get := func(id string) (out []struct {
+		ID     string `json:"id"`
+		Title  string `json:"title"`
+		Folder bool   `json:"folder"`
+		Art    string `json:"art"`
+	}) {
+		resp, err := http.Get(s.URL + "/api/browse?id=" + id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		json.NewDecoder(resp.Body).Decode(&out)
+		return out
+	}
+	top := get("0")
+	if len(top) == 0 || !top[0].Folder || top[0].Art == "" {
+		t.Fatalf("top: %+v", top)
+	}
+	shows := get("rec")
+	if len(shows) == 0 || !shows[0].Folder {
+		t.Fatalf("TV Shows: %+v", shows)
+	}
+	eps := get("recgroup/g1")
+	if len(eps) != 2 || eps[0].Folder {
+		t.Errorf("episodes: %+v", eps)
+	}
+	if got := get("nope"); len(got) != 0 {
+		t.Errorf("unknown folder: %+v", got)
+	}
+}

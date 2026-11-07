@@ -33,6 +33,13 @@
   pre.log .bad { color:var(--bad); } pre.log .t { color:var(--muted); }
   #logpanel.max { position:fixed; inset:0; z-index:10; background:var(--bg); padding:16px; display:flex; flex-direction:column; }
   #logpanel.max .card { flex:1; display:flex; min-height:0; margin-bottom:0; } #logpanel.max pre.log { max-height:none; flex:1; }
+  #tvbar { height:8px; border-radius:4px; background:var(--line); cursor:pointer; margin-top:8px; } #tvfill { height:100%; border-radius:4px; background:var(--accent); width:0; }
+  .tvchip.on { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent) inset; }
+  #crumbs a { cursor:pointer; color:var(--accent); } #crumbs span.sep { color:var(--muted); margin:0 6px; }
+  #tiles { display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); gap:10px; max-height:520px; overflow:auto; }
+  .tile { cursor:pointer; border:1px solid var(--line); border-radius:8px; overflow:hidden; background:var(--bg); }
+  .tile:hover { border-color:var(--accent); } .tile img { width:100%; aspect-ratio:4/3; object-fit:cover; display:block; background:var(--line); }
+  .tile div { padding:6px 8px; font-size:13px; line-height:1.3; } .tile small { color:var(--muted); display:block; }
   .ok { color:var(--good); } .err { color:var(--bad); } .tag { font-size:12px; color:var(--muted); border:1px solid var(--line); border-radius:10px; padding:0 8px; }
 </style>
 </head>
@@ -54,14 +61,21 @@
   <div class="card"><table id="seen"></table></div>
 
   <h2>Play on a TV</h2>
-  <p>TVs and players on the network that can be told what to play. Pick one, pick something to play, and control it from here.</p>
+  <p>TVs and players on the network that can be told what to play. Pick one, then pick something to play on it.</p>
   <div class="card">
-    <div class="row" style="margin-bottom:8px"><select id="tv" style="max-width:340px"></select><button id="tvlook">Look again</button><span id="tvstate" class="muted"></span></div>
-    <div class="row" style="margin-bottom:8px"><select id="tvfolder" style="max-width:200px"><option value="recent">Recent recordings</option><option value="live">Live TV</option><option value="fav">Favorites</option><option value="movies">Movies</option><option value="recnow">Recording now</option></select>
-      <input id="tvfilter" placeholder="Filter" style="max-width:240px"></div>
-    <select id="tvitems" size="8" style="margin-bottom:8px"></select>
-    <div class="row"><button class="primary" id="tvplay">Play</button><button data-do="pause">Pause</button><button data-do="resume">Resume</button><button data-do="stop">Stop</button>
-      <button data-seek="-30">−30 s</button><button data-seek="30">+30 s</button><button data-vol="-5">Vol −</button><button data-vol="5">Vol +</button><button id="tvmute">Mute</button></div>
+    <div class="row" id="tvs" style="margin-bottom:10px"></div>
+    <div id="remote" hidden>
+      <div class="row" style="justify-content:space-between"><b id="tvnow"></b><span id="tvstate" class="muted"></span></div>
+      <div id="tvbar" title="Click to go there"><div id="tvfill"></div></div>
+      <div class="row" style="margin-top:8px">
+        <button data-seek="-30" title="Back 30 s">⏪ 30 s</button><button id="tvtoggle" class="primary">⏯</button><button data-seek="30" title="On 30 s">30 s ⏩</button><button data-do="stop" title="Stop">⏹</button>
+        <span id="tvvol" class="row" style="margin-left:auto"><button id="tvmute" title="Mute">🔇</button><input id="tvvolume" type="range" min="0" max="100" style="width:140px"></span>
+      </div>
+    </div>
+  </div>
+  <div class="card" id="library">
+    <div class="row" style="margin-bottom:8px"><span id="crumbs"></span><input id="libfilter" placeholder="Filter" style="max-width:220px;margin-left:auto"></div>
+    <div id="tiles"></div>
   </div>
 
   <h2>Recent log</h2>
@@ -205,49 +219,69 @@ async function pollLog() {
 }
 $('logfilter').oninput = renderLog; $('logbad').onchange = renderLog;
 
-let tvItems = [], tvState = null;
+let tvs = [], tvSel = '', tvState = null, tvTitle = {}, libPath = [{ id: '0', title: 'Home' }], libItems = [];
+const clock = s => Math.floor(s / 3600) + ':' + String(Math.floor(s / 60) % 60).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
 async function tvLook(refresh) {
-  const list = await (await fetch('api/renderers' + (refresh ? '?refresh=1' : ''), { cache: 'no-store' })).json();
-  const cur = $('tv').value;
-  $('tv').replaceChildren(...(list.length ? list.map(r => el('option', { value: r.id }, r.name + ' (' + r.model + ', ' + r.ip + ')')) : [el('option', { value: '' }, 'None found')]));
-  if (cur) $('tv').value = cur;
-  tvPoll();
+  tvs = await (await fetch('api/renderers' + (refresh ? '?refresh=1' : ''), { cache: 'no-store' })).json();
+  if (!tvs.some(t => t.id === tvSel)) tvSel = tvs.length ? tvs[0].id : '';
+  tvRender(); tvPoll();
 }
-async function tvLoadItems() {
-  tvItems = await (await fetch('api/items?folder=' + $('tvfolder').value, { cache: 'no-store' })).json();
-  tvRenderItems();
-}
-function tvRenderItems() {
-  const f = $('tvfilter').value.toLowerCase();
-  $('tvitems').replaceChildren(...tvItems.filter(i => !f || i.title.toLowerCase().includes(f)).map(i => el('option', { value: i.id }, i.title)));
+function tvRender() {
+  $('tvs').replaceChildren(...tvs.map(t => el('button', { class: 'tvchip' + (t.id === tvSel ? ' on' : ''), title: t.model + ', ' + t.ip, on: { click: () => { tvSel = t.id; tvState = null; tvRender(); tvPoll(); } } }, t.name)),
+    el('button', { title: 'Look for TVs again', on: { click: () => tvLook(true) } }, '↻'), tvs.length ? '' : el('span', { class: 'muted' }, 'No TVs found. Are they on?'));
+  $('remote').hidden = !tvSel;
 }
 async function tvDo(what, body) {
-  const id = $('tv').value;
-  if (!id) return;
-  const r = await fetch('api/renderers/' + encodeURIComponent(id) + '/' + what, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+  if (!tvSel) return;
+  const r = await fetch('api/renderers/' + encodeURIComponent(tvSel) + '/' + what, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
   if (!r.ok) $('tvstate').textContent = (await r.json()).error || r.statusText;
-  setTimeout(tvPoll, 700);
+  setTimeout(tvPoll, 800);
 }
-const clock = s => Math.floor(s / 3600) + ':' + String(Math.floor(s / 60) % 60).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
 async function tvPoll() {
-  const id = $('tv').value;
-  if (!id) { $('tvstate').textContent = ''; return; }
-  const r = await fetch('api/renderers/' + encodeURIComponent(id), { cache: 'no-store' });
+  if (!tvSel) return;
+  const r = await fetch('api/renderers/' + encodeURIComponent(tvSel), { cache: 'no-store' });
   if (!r.ok) { $('tvstate').textContent = 'not answering'; tvState = null; return; }
-  tvState = await r.json();
-  $('tvstate').textContent = tvState.state.toLowerCase().replace(/_/g, ' ') + (tvState.duration ? ' · ' + clock(tvState.position) + ' of ' + clock(tvState.duration) : '') +
-    (tvState.volume >= 0 ? ' · volume ' + tvState.volume : '') + (tvState.muted ? ' (muted)' : '');
+  const st = tvState = await r.json();
+  const playing = st.state === 'PLAYING';
+  $('tvnow').textContent = tvTitle[tvSel] && st.state !== 'STOPPED' && st.state !== 'NO_MEDIA_PRESENT' ? tvTitle[tvSel] : '';
+  const label = { PLAYING: 'playing', PAUSED_PLAYBACK: 'paused', STOPPED: 'stopped', TRANSITIONING: 'starting…', NO_MEDIA_PRESENT: 'idle' }[st.state] || st.state.toLowerCase();
+  $('tvstate').textContent = label + (st.duration && st.state !== 'NO_MEDIA_PRESENT' ? ' · ' + clock(st.position) + ' / ' + clock(st.duration) : '');
+  $('tvfill').style.width = st.duration ? Math.min(100, 100 * st.position / st.duration) + '%' : '0';
+  $('tvtoggle').textContent = playing ? '⏸' : '▶';
+  $('tvvol').hidden = st.volume < 0;
+  if (st.volume >= 0 && document.activeElement !== $('tvvolume')) $('tvvolume').value = st.volume;
+  $('tvmute').textContent = st.muted ? '🔈' : '🔇';
 }
-$('tvlook').onclick = () => tvLook(true);
-$('tv').onchange = tvPoll;
-$('tvfolder').onchange = tvLoadItems;
-$('tvfilter').oninput = tvRenderItems;
-$('tvplay').onclick = () => $('tvitems').value && tvDo('play', { object: $('tvitems').value });
+$('tvtoggle').onclick = () => tvState && tvDo(tvState.state === 'PLAYING' ? 'pause' : 'resume');
 document.querySelectorAll('[data-do]').forEach(b => b.onclick = () => tvDo(b.dataset.do));
 document.querySelectorAll('[data-seek]').forEach(b => b.onclick = () => tvState && tvDo('seek', { seconds: tvState.position + +b.dataset.seek }));
-document.querySelectorAll('[data-vol]').forEach(b => b.onclick = () => tvState && tvState.volume >= 0 && tvDo('volume', { level: tvState.volume + +b.dataset.vol }));
+$('tvbar').onclick = e => { if (!tvState || !tvState.duration) return; const r = $('tvbar').getBoundingClientRect(); tvDo('seek', { seconds: Math.round((e.clientX - r.left) / r.width * tvState.duration) }); };
+$('tvvolume').onchange = () => tvDo('volume', { level: +$('tvvolume').value });
 $('tvmute').onclick = () => tvState && tvDo('mute', { mute: !tvState.muted });
-tvLook(false).catch(() => {}); tvLoadItems().catch(() => {}); setInterval(() => tvPoll().catch(() => {}), 3000);
+
+async function libOpen(i) {
+  libPath = libPath.slice(0, i + 1);
+  const cur = libPath[libPath.length - 1];
+  libItems = await (await fetch('api/browse?id=' + encodeURIComponent(cur.id), { cache: 'no-store' })).json();
+  $('libfilter').value = '';
+  libRender();
+}
+function libRender() {
+  $('crumbs').replaceChildren(...libPath.flatMap((p, i) => [i ? el('span', { class: 'sep' }, '›') : '', i < libPath.length - 1 ? el('a', { on: { click: () => libOpen(i) } }, p.title) : el('b', {}, p.title)]));
+  const f = $('libfilter').value.toLowerCase();
+  $('tiles').replaceChildren(...libItems.filter(o => !f || o.title.toLowerCase().includes(f)).map(o =>
+    el('div', { class: 'tile', title: o.folder ? 'Open' : (tvSel ? 'Play on the TV' : 'Pick a TV first'), on: { click: () => libPick(o) } },
+      o.art ? el('img', { src: o.art, loading: 'lazy', alt: '' }) : el('img', { alt: '' }),
+      el('div', {}, o.title, o.duration ? el('small', {}, clock(Math.round(o.duration))) : ''))), libItems.length ? '' : el('span', { class: 'muted' }, 'Nothing here.'));
+}
+function libPick(o) {
+  if (o.folder) { libPath.push({ id: o.id, title: o.title }); libOpen(libPath.length - 1); return; }
+  if (!tvSel) { $('tvs').scrollIntoView({ behavior: 'smooth' }); return; }
+  tvTitle[tvSel] = o.title;
+  tvDo('play', { object: o.id });
+}
+$('libfilter').oninput = libRender;
+tvLook(false).catch(() => {}); libOpen(0).catch(() => {}); setInterval(() => tvPoll().catch(() => {}), 3000);
 function maximizeLog(on) {
   $('logpanel').classList.toggle('max', on); $('logmax').textContent = on ? 'Restore' : 'Maximize';
   document.body.style.overflow = on ? 'hidden' : ''; $('log').scrollTop = $('log').scrollHeight;
