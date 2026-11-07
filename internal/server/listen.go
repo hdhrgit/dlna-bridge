@@ -164,9 +164,9 @@ func (s *Server) streamAudio(w http.ResponseWriter, r *http.Request) {
 	defer s.jobs.end(id)
 	w = &countWriter{w, s.jobs.counter(id)}
 	started := time.Now()
-	s.cfg.Logf("listen: %s to %s (%s)", what, ip, name)
+	s.cfg.Logf("audio: %s to %s (%s)", what, ip, name)
 	// The DVR sends the sound alone, so no video crosses the network to be
 	// thrown away here.
 	_, msg, err := s.runFFmpeg(w, r, audioArgs(prof.Audio, s.cfg.DVR.SoundStreamURL(dev, number), s.agent()), false, what)
-	s.cfg.Logf("listen: %s to %s ended after %s: %v %s", what, ip, time.Since(started).Round(time.Second), err, msg)
+	s.cfg.Logf("audio: %s to %s ended after %s: %v %s", what, ip, time.Since(started).Round(time.Second), err, msg)
 }

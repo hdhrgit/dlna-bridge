@@ -249,9 +249,9 @@ func (s *Server) lookupAny(ctx context.Context, v view, id string) (object, erro
 	case id == idSources:
 		return folder("Channels by source", s.sourceFoldersFn(ctx, v))
 	case id == idListen:
-		return folder("Listen", func() ([]object, error) { return s.listenItems(ctx, v, "") })
+		return folder("Audio", func() ([]object, error) { return s.listenItems(ctx, v, "") })
 	case id == idListenSources:
-		return folder("Listen by source", func() ([]object, error) { return s.listenSourceFolders(ctx, v) })
+		return folder("Audio by source", func() ([]object, error) { return s.listenSourceFolders(ctx, v) })
 	case strings.HasPrefix(id, "lsrc/"):
 		folders, err := s.listenSourceFolders(ctx, v)
 		if err != nil {

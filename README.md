@@ -139,7 +139,7 @@ names it by that TV's own address.
   seek like the shows. Left out when there are none.
 * **Search**: TVs that search (UPnP Search) find channels, episodes and movies by title, class, description
   or channel. Episodes come back titled with their show.
-* **Listen** and **Listen by source**: the live channels as sound alone, for players without a screen, in the
+* **Audio** and **Audio by source**: the live channels as sound alone, for players without a screen, in the
   client's audio format: AAC or MP3 at the client's bitrate, or the channel's own sound unconverted (MPEG-TS).
   The DVR sends the sound alone (its HLS with `vcodec=none&acodec=copy`), a few seconds behind its full stream;
   ffmpeg converts it, counted among the conversions at once.
@@ -169,7 +169,7 @@ Each client and the default have a **profile**:
 
 | | |
 |---|---|
-| Shows | **Pictures and Listen** (the default), **Pictures only** (no Listen folders), or **Listen only** (just the Listen folders, for a player without a screen). Folders a client is not shown are not found by id or search either. |
+| Shows | **Video and audio** (the default), **Video only** (no Audio folders), or **Audio only** (just the Audio folders, for a player without a screen). Folders a client is not shown are not found by id or search either. |
 | Streams | **Through the bridge** (the default): the DVR's stream passed through, with the DLNA headers TVs expect. **Direct**: the client plays the DVR's own stream, which the bridge never sees: an optimization for TVs that accept it (the LGs do; a Samsung does not). **Converted**: ffmpeg converts it, below. |
 | Commercials | **Cut out**, or **Play** (pass through). |
 | Resume and watched | **Shared with the DVR** (the default): where the client leaves a recording goes to the DVR, and one played to the end is marked watched, so the Channels apps resume there too. **Kept here**: the DVR is not told. |

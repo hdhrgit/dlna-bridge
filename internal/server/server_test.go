@@ -173,7 +173,7 @@ func TestBrowseRoot(t *testing.T) {
 	for i, want := range []struct {
 		title string
 		kids  int
-	}{{"Live TV", 3}, {"Favorites", 1}, {"Recent recordings", 3}, {"TV Shows", 3}, {"Movies", 1}, {"Recording now", 1}, {"Channels by source", 2}, {"Listen", 3}, {"Listen by source", 2}} {
+	}{{"Live TV", 3}, {"Favorites", 1}, {"Recent recordings", 3}, {"TV Shows", 3}, {"Movies", 1}, {"Recording now", 1}, {"Channels by source", 2}, {"Audio", 3}, {"Audio by source", 2}} {
 		if got := d.Containers[i]; got.Title != want.title || got.ChildCount != want.kids {
 			t.Errorf("folder %d: %+v, want %s with %d", i, got, want.title, want.kids)
 		}

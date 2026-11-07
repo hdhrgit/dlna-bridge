@@ -120,14 +120,14 @@ function sel(obj, key, opts, after) { return el('select', { on: { change: e => {
 function profileForm(p, rerender) {
   const box = el('div');
   box.append(el('div', { class: 'grid' },
-    field('Shows', sel(p, 'kind', [['both', 'Pictures and Listen'], ['video', 'Pictures only (live TV, recordings)'], ['sound', 'Listen only (no screen)']])),
+    field('Shows', sel(p, 'kind', [['both', 'Video and audio'], ['video', 'Video only (live TV, recordings)'], ['sound', 'Audio only (no screen)']])),
     field('Streams', sel(p, 'mode', [['direct', 'Direct from the DVR'], ['proxy', 'Through the bridge'], ['transcode', 'Converted (ffmpeg)']], rerender)),
     field('Commercials', sel(p, 'ads', [['cut', 'Cut out'], ['keep', 'Play (pass through)']], rerender)),
     field('Resume and watched', sel(p, 'playback', [['share', 'Shared with the DVR'], ['keep', 'Kept here']]))));
   if (!p.audio) p.audio = { format: 'aac', kbps: 128, channels: 2 };
   box.append(el('div', { class: 'grid' },
-    field('Listen: sound as', sel(p.audio, 'format', [['aac', 'AAC'], ['mp3', 'MP3'], ['copy', 'Pass through (unconverted)']], rerender)),
-    ...(p.audio.format === 'copy' ? [] : [field('Listen: kbps', num(p.audio, 'kbps', 32, 320)), field('Listen: channels', num(p.audio, 'channels', 1, 6))])));
+    field('Audio: sound as', sel(p.audio, 'format', [['aac', 'AAC'], ['mp3', 'MP3'], ['copy', 'Pass through (unconverted)']], rerender)),
+    ...(p.audio.format === 'copy' ? [] : [field('Audio: kbps', num(p.audio, 'kbps', 32, 320)), field('Audio: channels', num(p.audio, 'channels', 1, 6))])));
   if (p.ads === 'cut' || p.mode === 'transcode') {
     if (!p.seek || p.seek === 'none') p.seek = 'bytes';
     const bytes = p.mode === 'transcode' ? 'By bytes: converted recordings do not seek' : 'By bytes: every TV, starts after the cuts are worked out';
