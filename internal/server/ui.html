@@ -96,6 +96,9 @@
      A stream can also ask for a client by name with <code>?profile=NAME</code>, for a device that has no fixed address.</p>
   <div id="clients"></div>
   <button id="add">Add a client</button>
+  <h3>Built in</h3>
+  <p>Used only by name with <code>?profile=NAME</code>. A client above with the same name takes its place, and removing that client brings the built-in one back.</p>
+  <div id="builtin"></div>
 
   <h2>Other settings</h2>
   <div class="card grid">
@@ -108,7 +111,7 @@
 <div class="bar"><div class="inner"><button class="primary" id="save">Save</button><span id="msg"></span></div></div>
 
 <script>
-let cfg = null, defaults = null, saved = true;
+let cfg = null, defaults = null, saved = true, builtin = [];
 const $ = (id) => document.getElementById(id);
 const el = (tag, attrs = {}, ...kids) => { const e = document.createElement(tag); for (const [k, v] of Object.entries(attrs)) k === 'on' ? Object.entries(v).forEach(([ev, f]) => e.addEventListener(ev, f)) : e.setAttribute(k, v); kids.flat().forEach(c => e.append(c)); return e; };
 const lines = (s) => s.split('\n').map(x => x.trim()).filter(Boolean);
@@ -167,7 +170,20 @@ function render() {
       field('Addresses or ranges, one per line (10.0.0.7, 192.168.1.0/24)', el('textarea', { on: { input: e => cl.ips = lines(e.target.value) } }, (cl.ips || []).join('\n'))),
       field('User-Agent contains, one per line', el('textarea', { on: { input: e => cl.user_agents = lines(e.target.value) } }, (cl.user_agents || []).join('\n')))),
     profileForm(cl.profile, render))));
+  $('builtin').replaceChildren(...builtin.map(b => {
+    const mine = cfg.clients.find(cl => cl.name.trim().toLowerCase() === b.name.toLowerCase());
+    return el('div', { class: 'card' },
+      el('div', { class: 'row' }, el('div', { style: 'flex:1' }, el('b', {}, b.name), ' ', el('span', { class: 'tag' }, 'built in'),
+        mine ? el('span', { class: 'muted' }, ' · replaced by the client "' + mine.name + '" above') : ''),
+        mine ? '' : el('button', { on: { click: () => editCopy(b) } }, 'Edit a copy')),
+      mine ? '' : el('fieldset', { disabled: '', style: 'border:0;padding:0;margin:0' }, profileForm(JSON.parse(JSON.stringify(b.profile)), () => {})));
+  }));
   renderSeen();
+}
+
+function editCopy(b) {
+  cfg.clients.push(JSON.parse(JSON.stringify(b)));
+  render(); $('clients').lastChild.scrollIntoView({ behavior: 'smooth' });
 }
 
 function ago(t) { const s = Math.max(0, (Date.now() - new Date(t)) / 1000); return s < 90 ? Math.round(s) + ' s ago' : s < 5400 ? Math.round(s / 60) + ' min ago' : Math.round(s / 3600) + ' h ago'; }
@@ -309,7 +325,7 @@ function addFrom(c) {
 
 async function load(keepEdits) {
   const st = await (await fetch('api/state', { cache: 'no-store' })).json();
-  lastState = st; defaults = st.transcode_defaults; saved = st.saved;
+  lastState = st; defaults = st.transcode_defaults; saved = st.saved; builtin = st.builtin || [];
   $('title').textContent = st.name + ' · DLNA bridge';
   if (!keepEdits) { cfg = st.config; render(); } else renderSeen();
 }

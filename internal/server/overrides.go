@@ -73,12 +73,13 @@ type capsMax struct {
 	AB  int `json:"ab"`
 }
 
-// apiCaps tells a device which overrides its stream requests may carry, and
-// the most each may ask for.
+// apiCaps tells a device which overrides its stream requests may carry, the
+// most each may ask for, and the built-in profiles it can ask for by name.
 func (s *Server) apiCaps(w http.ResponseWriter, r *http.Request) {
 	l := s.cfg.Settings.Limits()
 	writeJSON(w, http.StatusOK, struct {
 		Overrides []string `json:"overrides"`
 		Max       capsMax  `json:"max"`
-	}{overrideParams, capsMax{l.MaxWidth, l.MaxHeight, l.FPS, l.VideoKbps, l.AudioKbps}})
+		Profiles  []string `json:"profiles"`
+	}{overrideParams, capsMax{l.MaxWidth, l.MaxHeight, l.FPS, l.VideoKbps, l.AudioKbps}, config.BuiltinNames()})
 }

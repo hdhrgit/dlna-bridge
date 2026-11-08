@@ -31,6 +31,34 @@ func TestMatch(t *testing.T) {
 	}
 }
 
+// The built-in esp32 client is there by name only, and a config client of the
+// same name takes its place.
+func TestBuiltin(t *testing.T) {
+	c := Config{Default: Profile{Mode: ModeProxy}}
+	c.Fill()
+	name, p := c.Match(nil, "channelstv/1.0", "ESP32")
+	if name != "esp32" || p.Mode != ModeTranscode || p.Ads != AdsCut || p.Seek != SeekTime {
+		t.Fatalf("by name: %q %+v", name, p)
+	}
+	tc := p.Transcode
+	if tc.MaxWidth != 240 || tc.MaxHeight != 144 || tc.FPS != 24 || tc.VideoKbps != 250 || tc.AudioKbps != 64 || tc.AudioChannels != 1 ||
+		tc.H264Profile != "baseline" || !tc.PreScale || !tc.ExactSize || !tc.SingleSlice {
+		t.Errorf("settings: %+v", tc)
+	}
+	if name, _ := c.Match(nil, "channelstv/1.0", ""); name != "" {
+		t.Errorf("by User-Agent: %q", name)
+	}
+	c.Clients = []Client{{Name: "Esp32", Profile: Profile{Mode: ModeTranscode, Transcode: Transcode{MaxWidth: 320, MaxHeight: 240}}}}
+	if name, p := c.Match(nil, "", "esp32"); name != "Esp32" || p.Transcode.MaxWidth != 320 {
+		t.Errorf("config client: %q %+v", name, p.Transcode)
+	}
+	for _, cl := range Builtin() {
+		if err := cl.Profile.validate(); err != nil {
+			t.Errorf("%s: %v", cl.Name, err)
+		}
+	}
+}
+
 func TestValidate(t *testing.T) {
 	good := Config{Default: Profile{Mode: ModeDirect, Ads: AdsCut}, MaxTranscodes: 2, RecentHours: 24, Limits: DefaultLimits(),
 		Clients: []Client{{Name: "A", IPs: []string{"10.0.0.1"}, Profile: Profile{Mode: ModeTranscode, Ads: AdsKeep, Transcode: DefaultTranscode()}}}}

@@ -36,6 +36,7 @@ type state struct {
 	Channels    int              `json:"channels"`
 	Recs        int              `json:"recordings"`
 	Config      config.Config    `json:"config"`
+	Builtin     []config.Client  `json:"builtin"` // used by name when the config has no client of that name
 	ConfigPath  string           `json:"config_path"`
 	Saved       bool             `json:"saved"` // the config is kept in a file
 	Clients     []seenClient     `json:"clients"`
@@ -51,7 +52,7 @@ type state struct {
 func (s *Server) apiState(w http.ResponseWriter, r *http.Request) {
 	st := state{
 		Name: s.cfg.Name, Version: s.cfg.Version, DVR: s.cfg.DVR.Base.String(),
-		Config: s.cfg.Settings.Get(), ConfigPath: s.cfg.ConfigPath, Saved: s.cfg.Settings.Persistent(),
+		Config: s.cfg.Settings.Get(), Builtin: config.Builtin(), ConfigPath: s.cfg.ConfigPath, Saved: s.cfg.Settings.Persistent(),
 		Clients: s.clients.list(), Streams: s.jobs.list(), Defaults: config.DefaultTranscode(),
 		DVRHealth: s.cfg.DVR.Health(), DVRClient: s.registration(), UptimeSecs: int64(time.Since(s.started).Seconds()), Location: "http://" + s.hostOf(r) + "/description.xml",
 	}

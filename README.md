@@ -165,6 +165,13 @@ decides; anything else gets the default. A stream URL can also pick a client by 
 a device that has no fixed address. `/channels.m3u?profile=NAME` lists every channel that way, for players that
 take a playlist.
 
+One client is **built in**: `esp32`, for the [channelstv](https://github.com/hdhrgit/channelstv) boards, used
+only by name (`?profile=esp32`). It converts to H.264 Constrained Baseline with one slice per frame, 240x144
+stretched, 24 fps, 250 kbit/s video, AAC mono 64 kbit/s, from the DVR's small stream for live channels, with
+commercials cut and seeking by time; each board asks for its own size with the overrides below. It needs no
+setting up. The settings page shows it read-only, with *Edit a copy*: a client of the same name in `config.json`
+takes its place, and removing that client brings the built-in one back.
+
 Each client and the default have a **profile**:
 
 | | |
@@ -186,8 +193,8 @@ stretched), `fps` the most frames per second, `vb` and `ab` the video and audio 
 H.264 profile, slices, small stream, commercials, audio channels) stays the profile's. Values beyond the limits
 under *Other settings* (by default 640x480, 30 fps, 1500 and 128 kbit/s) are held to them; values that are
 not numbers are ignored, as are overrides on a stream that is not converted. A live channel from the DVR's
-small stream gets at most 64 kbit/s audio, which is all that stream has. `GET /api/caps` lists the overrides
-and the limits, and each converted stream carries what it was made with, e.g.
+small stream gets at most 64 kbit/s audio, which is all that stream has. `GET /api/caps` lists the overrides,
+the limits and the built-in profiles (`"profiles": ["esp32"]`), and each converted stream carries what it was made with, e.g.
 `X-Transcode: 320x180 fit=scale fps=24 vb=400 ab=64`. For a profile that fits the picture inside its size
 (`fit=inside`), the size given is that box.
 

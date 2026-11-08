@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -345,11 +346,36 @@ func parseNet(s string) (*net.IPNet, error) {
 	return &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)}, nil
 }
 
+// Builtin is the clients the bridge has without being set up, picked only by
+// name with ?profile=<name>. A client of the same name in the config takes the
+// place of one.
+//
+// esp32 is for the channelstv boards: 240x144 stretched, one slice a frame,
+// commercials cut and seeking by time. Each board asks for its own size with
+// the stream overrides.
+func Builtin() []Client {
+	esp32 := Client{Name: "esp32", IPs: []string{}, UserAgents: []string{}, Profile: Profile{Mode: ModeTranscode, Ads: AdsCut, Seek: SeekTime,
+		Transcode: Transcode{MaxWidth: 240, MaxHeight: 144, FPS: 24, VideoKbps: 250, AudioKbps: 64, AudioChannels: 1, H264Profile: "baseline", PreScale: true, ExactSize: true, SingleSlice: true}}}
+	c := Config{Clients: []Client{esp32}}
+	c.Fill()
+	return c.Clients
+}
+
+// BuiltinNames are the names of the built-in clients.
+func BuiltinNames() []string {
+	var out []string
+	for _, cl := range Builtin() {
+		out = append(out, cl.Name)
+	}
+	return out
+}
+
 // Match finds the profile for a request: the client called forced, if there
-// is one, else the first whose address or User-Agent fits, else the default.
+// is one, from the config or else built in; else the first whose address or
+// User-Agent fits; else the default.
 func (c *Config) Match(ip net.IP, ua, forced string) (string, Profile) {
 	if forced != "" {
-		for _, cl := range c.Clients {
+		for _, cl := range slices.Concat(c.Clients, Builtin()) {
 			if strings.EqualFold(cl.Name, forced) {
 				return cl.Name, cl.Profile
 			}

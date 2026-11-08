@@ -104,11 +104,11 @@ func TestCaps(t *testing.T) {
 		b, _ := json.Marshal(v)
 		return string(b)
 	}
-	if got := get(newTestServer(t, true)); got != `{"max":{"ab":128,"fps":30,"h":480,"vb":1500,"w":640},"overrides":["w","h","fit","fps","vb","ab"]}` {
+	if got := get(newTestServer(t, true)); got != `{"max":{"ab":128,"fps":30,"h":480,"vb":1500,"w":640},"overrides":["w","h","fit","fps","vb","ab"],"profiles":["esp32"]}` {
 		t.Errorf("default: %s", got)
 	}
 	s := newServerWith(t, config.Config{Limits: config.Limits{MaxWidth: 448, MaxHeight: 252, FPS: 25, VideoKbps: 800, AudioKbps: 96}})
-	if got := get(s); got != `{"max":{"ab":96,"fps":25,"h":252,"vb":800,"w":448},"overrides":["w","h","fit","fps","vb","ab"]}` {
+	if got := get(s); got != `{"max":{"ab":96,"fps":25,"h":252,"vb":800,"w":448},"overrides":["w","h","fit","fps","vb","ab"],"profiles":["esp32"]}` {
 		t.Errorf("from the config: %s", got)
 	}
 }
@@ -131,6 +131,17 @@ func TestTranscodeHeader(t *testing.T) {
 		"/stream/rec/17?profile=esp32&w=320&h=180&fps=24&vb=400&ab=64":   "320x180 fit=scale fps=24 vb=400 ab=64",
 		"/stream/adfree/17?profile=esp32&w=448&h=252&fit=crop43&vb=5000": "448x252 fit=crop43 fps=24 vb=1500 ab=64",
 		"/stream/rec/17?w=320&h=180":                                     "",
+	} {
+		if got := head(path).Get("X-Transcode"); got != want {
+			t.Errorf("%s: got %q, want %q", path, got, want)
+		}
+	}
+	// With no esp32 client in the config, the built-in one serves the boards.
+	s = newServerWith(t, config.Config{Default: config.Profile{Mode: config.ModeProxy}})
+	for path, want := range map[string]string{
+		"/stream/rec/17?profile=esp32":                        "240x144 fit=scale fps=24 vb=250 ab=64",
+		"/stream/rec/17?profile=esp32&w=320&h=240&fit=crop43": "320x240 fit=crop43 fps=24 vb=250 ab=64",
+		"/stream/rec/17?profile=esp32&w=9999&h=9999&vb=9999":  "640x480 fit=scale fps=24 vb=1500 ab=64",
 	} {
 		if got := head(path).Get("X-Transcode"); got != want {
 			t.Errorf("%s: got %q, want %q", path, got, want)
