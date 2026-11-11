@@ -23,7 +23,7 @@ systemd service and a settings file, and not ffmpeg: that is only needed by clie
 suggested, not required.
 
 ```sh
-sudo apt install ./dlna-bridge_0.99.9_amd64.deb      # or: sudo dnf install ./dlna-bridge-0.99.10-1.x86_64.rpm
+sudo apt install ./dlna-bridge_0.99.11_amd64.deb     # or: sudo dnf install ./dlna-bridge-0.99.11-1.x86_64.rpm
 sudoedit /etc/dlna-bridge/dlna-bridge.env             # set DLNA_DVR to the Channels DVR
 sudo systemctl enable --now dlna-bridge
 ```
@@ -39,7 +39,7 @@ A multi-platform image (linux/amd64, linux/arm64 and linux/arm/v7) is published 
 docker run -d --name dlna-bridge --restart unless-stopped --init --network host \
   -v dlna-state:/var/lib/dlna \
   -e DLNA_DVR=http://localhost:8089 \
-  ghcr.io/hdhrgit/dlna-bridge:0.99.10
+  ghcr.io/hdhrgit/dlna-bridge:0.99.11
 ```
 
 or save `docker-compose.yml` from this repo, set `DLNA_DVR` in it, and run `docker compose up -d`. To build from
