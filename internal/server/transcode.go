@@ -152,7 +152,11 @@ func (s *Server) transcode(w http.ResponseWriter, r *http.Request, t config.Tran
 		setSendBuffer(r, liveSendBuffer)
 	}
 	for try := 1; ; try++ {
-		sent, msg, err := s.runFFmpeg(w, r, args, live, what)
+		stall := recordingStallLimit
+		if live {
+			stall = stallLimit
+		}
+		sent, msg, err := s.runFFmpeg(w, r, args, live, stall, what)
 		s.cfg.Logf("transcode: %s to %s ended after %s: %v %s", what, ip, time.Since(started).Round(time.Second), err, msg)
 		// The DVR's small stream sometimes fails to start, and ffmpeg is
 		// stopped after startLimit. The client has had nothing yet, so it is
@@ -194,9 +198,17 @@ func parseNPT(h string) (float64, bool) {
 // small stream takes 6 to 15 s to start; when it fails, ffmpeg waits on.
 const startLimit = 20 * time.Second
 
-// stallLimit is how long a write to the client may block. A device that
-// stops reading but keeps its connection would otherwise hold a conversion.
-const stallLimit = 20 * time.Second
+// stallLimit is how long a write to a live stream's client may block. A
+// device that stops reading but keeps its connection would otherwise hold a
+// conversion.
+var stallLimit = 20 * time.Second
+
+// recordingStallLimit is the same for a recording, whose ffmpeg runs many
+// times faster than the client plays and so waits for it, with the socket
+// buffers on the way full. The kernel lets a blocked write go on only once a
+// good part of them has been taken, which for a client that reads at the pace
+// it plays can be well over stallLimit, as can a proxy's own pauses.
+var recordingStallLimit = 5 * time.Minute
 
 // liveBacklog is the most video of a live channel held for a slow client.
 // The DVR passes a channel on in bursts of up to 7 s of video, which a client
@@ -227,7 +239,8 @@ func ConnContext(ctx context.Context, c net.Conn) context.Context {
 // returns the bytes sent and the end of ffmpeg's error output. For a live
 // channel the output goes through a queue that is cut when it holds more than
 // liveBacklog, so ffmpeg, and the DVR behind it, never wait for the client.
-func (s *Server) runFFmpeg(w http.ResponseWriter, r *http.Request, args []string, live bool, what string) (int64, string, error) {
+// Otherwise ffmpeg waits for the client, unless a write blocks for stall.
+func (s *Server) runFFmpeg(w http.ResponseWriter, r *http.Request, args []string, live bool, stall time.Duration, what string) (int64, string, error) {
 	cmd := exec.CommandContext(r.Context(), s.cfg.FFmpeg, args...)
 	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 	cmd.WaitDelay = 3 * time.Second
@@ -270,7 +283,7 @@ func (s *Server) runFFmpeg(w http.ResponseWriter, r *http.Request, args []string
 		n, rerr := src.Read(buf)
 		if n > 0 {
 			started.Store(true)
-			rc.SetWriteDeadline(time.Now().Add(stallLimit))
+			rc.SetWriteDeadline(time.Now().Add(stall))
 			if _, werr := w.Write(buf[:n]); werr != nil {
 				break
 			}
