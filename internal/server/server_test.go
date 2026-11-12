@@ -2122,16 +2122,3 @@ func TestAPIBrowse(t *testing.T) {
 		t.Errorf("unknown folder: %+v", got)
 	}
 }
-
-// A picture bigger than a 1080i field is deinterlaced; a smaller one has its
-// fields blended by the scaling.
-func TestDeinterlace(t *testing.T) {
-	tc := config.DefaultTranscode()
-	if vf := videoFilter(tc); strings.Contains(vf, "yadif") {
-		t.Errorf("240 high: %s", vf)
-	}
-	tc.MaxWidth, tc.MaxHeight = 1280, 720
-	if vf := videoFilter(tc); !strings.HasPrefix(vf, "yadif=deint=interlaced,fps=") {
-		t.Errorf("720 high: %s", vf)
-	}
-}

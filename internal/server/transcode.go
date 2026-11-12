@@ -31,20 +31,13 @@ func (s *Server) agent() string {
 // evenCeil rounds up to an even number: the DVR's encoder refuses odd heights.
 func evenCeil(n int) int { return n + n%2 }
 
-// interlacedField is the height of one field of a 1080i broadcast.
-const interlacedField = 540
-
-// videoFilter is the picture's way through ffmpeg: whole frames, no faster
-// than t.FPS, the middle cut to the crop shape, then fitted inside the largest
-// size (or stretched to it), both sides even. A fit asked for with the stream first
+// videoFilter is the picture's way through ffmpeg: no faster than t.FPS, the
+// middle cut to the crop shape, then fitted inside the largest size (or
+// stretched to it), both sides even. Scaled down to a small screen, a 1080i
+// picture's two fields are blended into each line, so it is not deinterlaced. A fit asked for with the stream first
 // makes the pixels square, so that it works on the picture's shape as seen.
 func videoFilter(t config.Transcode) string {
 	f := []string{fmt.Sprintf(`fps=min(source_fps\,%d)`, t.FPS)}
-	if t.MaxHeight > interlacedField {
-		// Scaled to less, a 1080i picture's two fields are blended into
-		// each line, as the DVR's own small streams do it.
-		f = append([]string{"yadif=deint=interlaced"}, f...)
-	}
 	w, h := t.MaxWidth, t.MaxHeight
 	square := `scale=trunc(iw*sar/2)*2:ih,setsar=1`
 	inside := fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2", w, h)
