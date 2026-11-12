@@ -33,9 +33,10 @@ func evenCeil(n int) int { return n + n%2 }
 
 // videoFilter is the picture's way through ffmpeg: no faster than t.FPS, the
 // middle cut to the crop shape, then fitted inside the largest size (or
-// stretched to it), both sides even. Scaled down to a small screen, a 1080i
-// picture's two fields are blended into each line, so it is not deinterlaced. A fit asked for with the stream first
+// stretched to it), both sides even. A fit asked for with the stream first
 // makes the pixels square, so that it works on the picture's shape as seen.
+// Scaled down to a small screen, a 1080i picture's two fields blend into each
+// line, so it is not deinterlaced.
 func videoFilter(t config.Transcode) string {
 	f := []string{fmt.Sprintf(`fps=min(source_fps\,%d)`, t.FPS)}
 	w, h := t.MaxWidth, t.MaxHeight
