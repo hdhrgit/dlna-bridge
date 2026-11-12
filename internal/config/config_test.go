@@ -42,7 +42,7 @@ func TestBuiltin(t *testing.T) {
 	}
 	tc := p.Transcode
 	if tc.MaxWidth != 240 || tc.MaxHeight != 144 || tc.FPS != 24 || tc.VideoKbps != 250 || tc.AudioKbps != 64 || tc.AudioChannels != 1 ||
-		tc.H264Profile != "baseline" || !tc.PreScale || !tc.ExactSize || !tc.SingleSlice {
+		tc.H264Profile != "baseline" || !tc.PreScale || !tc.ExactSize || !tc.SingleSlice || !tc.NoDeblock {
 		t.Errorf("settings: %+v", tc)
 	}
 	if name, _ := c.Match(nil, "channelstv/1.0", ""); name != "" {

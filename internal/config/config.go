@@ -101,6 +101,9 @@ type Transcode struct {
 	Crop string `json:"crop,omitempty"`
 	// SingleSlice makes each frame one slice, for decoders that take no more.
 	SingleSlice bool `json:"single_slice"`
+	// NoDeblock leaves out H.264's deblocking filter, which a slow software
+	// decoder then skips: less work a frame, a slightly blockier picture.
+	NoDeblock bool `json:"no_deblock,omitempty"`
 }
 
 // CropShape reads Crop as width and height parts, false when it is empty or
@@ -350,12 +353,12 @@ func parseNet(s string) (*net.IPNet, error) {
 // name with ?profile=<name>. A client of the same name in the config takes the
 // place of one.
 //
-// esp32 is for the channelstv boards: 240x144 stretched, one slice a frame,
-// commercials cut and seeking by time. Each board asks for its own size with
-// the stream overrides.
+// esp32 is for the channelstv boards: 240x144 stretched, one slice a frame
+// without deblocking, commercials cut and seeking by time. Each board asks for
+// its own size with the stream overrides.
 func Builtin() []Client {
 	esp32 := Client{Name: "esp32", IPs: []string{}, UserAgents: []string{}, Profile: Profile{Mode: ModeTranscode, Ads: AdsCut, Seek: SeekTime,
-		Transcode: Transcode{MaxWidth: 240, MaxHeight: 144, FPS: 24, VideoKbps: 250, AudioKbps: 64, AudioChannels: 1, H264Profile: "baseline", PreScale: true, ExactSize: true, SingleSlice: true}}}
+		Transcode: Transcode{MaxWidth: 240, MaxHeight: 144, FPS: 24, VideoKbps: 250, AudioKbps: 64, AudioChannels: 1, H264Profile: "baseline", PreScale: true, ExactSize: true, SingleSlice: true, NoDeblock: true}}}
 	c := Config{Clients: []Client{esp32}}
 	c.Fill()
 	return c.Clients

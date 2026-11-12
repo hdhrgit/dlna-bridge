@@ -150,6 +150,8 @@ function profileForm(p, rerender) {
       'Stretch to exactly the largest width x height (no fitting inside)'));
     box.append(el('label', { class: 'check' }, el('input', { type: 'checkbox', ...(t.single_slice ? { checked: '' } : {}), on: { change: e => t.single_slice = e.target.checked } }),
       'One slice per frame (for decoders that take no more)'));
+    box.append(el('label', { class: 'check' }, el('input', { type: 'checkbox', ...(t.no_deblock ? { checked: '' } : {}), on: { change: e => t.no_deblock = e.target.checked } }),
+      'No deblocking filter (less work for slow software decoders, slightly blockier picture)'));
     box.append(el('div', { class: 'grid' }, field('Keep the middle in this shape, such as 4:3 (empty keeps the whole picture)',
       el('input', { value: t.crop || '', on: { input: e => t.crop = e.target.value.trim() } }))));
   }

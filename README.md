@@ -166,9 +166,10 @@ a device that has no fixed address. `/channels.m3u?profile=NAME` lists every cha
 take a playlist.
 
 One client is **built in**: `esp32`, for the [channelstv](https://github.com/hdhrgit/channelstv) boards, used
-only by name (`?profile=esp32`). It converts to H.264 Constrained Baseline with one slice per frame, 240x144
-stretched, 24 fps, 250 kbit/s video, AAC mono 64 kbit/s, from the DVR's small stream for live channels, with
-commercials cut and seeking by time; each board asks for its own size with the overrides below. It needs no
+only by name (`?profile=esp32`). It converts to H.264 Constrained Baseline with one slice per frame and no
+deblocking filter (less work for the boards' decoder), 240x144 stretched, 24 fps, 250 kbit/s video, AAC mono
+64 kbit/s, from the DVR's small stream for live channels, with commercials cut and seeking by time; each board
+asks for its own size with the overrides below. It needs no
 setting up. The settings page shows it read-only, with *Edit a copy*: a client of the same name in `config.json`
 takes its place, and removing that client brings the built-in one back.
 

@@ -620,6 +620,14 @@ func TestFFmpegArgs(t *testing.T) {
 			t.Errorf("board: no %q in %s", want, args)
 		}
 	}
+	tc.NoDeblock = true
+	if args := strings.Join(ffmpegArgs(tc, "in", false, "", 0), " "); !strings.Contains(args, "-x264-params sliced-threads=0:slices=1:no-deblock=1 -g 48 ") {
+		t.Errorf("no deblock: %s", args)
+	}
+	tc.SingleSlice = false
+	if args := strings.Join(ffmpegArgs(tc, "in", false, "", 0), " "); !strings.Contains(args, "-x264-params no-deblock=1 -g 48 ") {
+		t.Errorf("no deblock, slices: %s", args)
+	}
 	if args := strings.Join(ffmpegArgs(tc, "in", true, "", 0), " "); !strings.Contains(args, "-live_start_index -1 -i in ") {
 		t.Errorf("live HLS: %s", args)
 	}

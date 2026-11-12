@@ -54,10 +54,17 @@ func videoFilter(t config.Transcode) string {
 // which ffmpeg makes with a byte range on a recording.
 func ffmpegArgs(t config.Transcode, input string, liveHLS bool, userAgent string, start float64) []string {
 	kbps := func(n int) string { return strconv.Itoa(n) + "k" }
-	x264 := []string{}
+	var params []string
 	if t.SingleSlice {
 		// zerolatency turns on sliced threads, which splits each frame.
-		x264 = []string{"-x264-params", "sliced-threads=0:slices=1"}
+		params = append(params, "sliced-threads=0:slices=1")
+	}
+	if t.NoDeblock {
+		params = append(params, "no-deblock=1")
+	}
+	x264 := []string{}
+	if len(params) > 0 {
+		x264 = []string{"-x264-params", strings.Join(params, ":")}
 	}
 	args := []string{"-hide_banner", "-loglevel", "error", "-nostdin"}
 	if userAgent != "" {
