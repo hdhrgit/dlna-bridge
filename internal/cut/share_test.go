@@ -108,3 +108,24 @@ func TestShareSoundAlone(t *testing.T) {
 		t.Errorf("starts at PID %d", pk.pid)
 	}
 }
+
+// Keyframes that are not flagged are known by the start of their picture,
+// even when it runs past the PES's first packet.
+func TestShareFindsUnflaggedKeyframes(t *testing.T) {
+	in := testStreamNAL(10, 0, true)
+	s := NewShare()
+	half := len(in) / 2 / packetSize * packetSize
+	s.Write(in[:half])
+	r := s.Reader(1<<30, nil)
+	s.Write(in[half:])
+	s.CloseWithError(nil)
+	out, _ := io.ReadAll(r)
+	pk, _ := parsePacket(out[2*packetSize:])
+	pts, _ := pesPTS(pk.payload)
+	if pk.pid != testVideoPID || !pk.pusi || pts != 4*90000 {
+		t.Errorf("starts at PID %d, PTS %d", pk.pid, pts)
+	}
+	if want := len(in) - half + (half - 4*len(in)/10/packetSize*packetSize); len(out) < len(in)-half {
+		t.Errorf("got %d bytes, want about %d", len(out), want)
+	}
+}

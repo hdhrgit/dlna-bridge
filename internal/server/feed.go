@@ -2,10 +2,9 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"io"
-	"os"
-	"os/exec"
-	"strings"
+	"net/http"
 	"sync"
 	"time"
 
@@ -77,41 +76,17 @@ func (s *Server) joinFeed(req feedReq, what string) (r *cut.ShareReader, release
 	}
 }
 
-// startFeed starts reading a channel from the DVR into a share, with feeds.mu
-// held. When the DVR's stream ends, so does the share, and the next client
-// starts another.
+// startFeed starts reading a channel from the DVR into a share, with
+// feeds.mu held. When the DVR's stream ends, so does the share, and the next
+// client starts another.
 func (s *Server) startFeed(key string, req feedReq, what string) *feed {
-	input := s.cfg.DVR.Base.String() + dvr.LivePath(req.dev, req.number)
 	ctx, cancel := context.WithCancel(context.Background())
 	f := &feed{share: cut.NewShare(), stop: cancel}
-	args := []string{"-hide_banner", "-loglevel", "error", "-nostdin"}
-	if ua := s.agent(); ua != "" {
-		args = append(args, "-user_agent", ua)
-	}
-	// Copied through ffmpeg, which flags each keyframe where it starts.
-	args = append(args, "-i", input,
-		"-map", "0:v:0?", "-map", "0:a:0?", "-c", "copy",
-		"-flush_packets", "1", "-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0", "pipe:1")
-	cmd := exec.CommandContext(ctx, s.cfg.FFmpeg, args...)
-	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
-	cmd.WaitDelay = 3 * time.Second
-	stderr := &tailBuffer{max: 4 << 10}
-	cmd.Stderr = stderr
-	out, err := cmd.StdoutPipe()
-	if err == nil {
-		err = cmd.Start()
-	}
-	if err != nil {
-		cancel()
-		f.share.CloseWithError(err)
-		return f
-	}
 	s.cfg.Logf("feed: %s from the DVR", what)
-	started := time.Now()
 	go func() {
-		_, err := io.Copy(f.share, out)
+		started := time.Now()
+		err := s.readFeed(ctx, req, f.share)
 		f.share.CloseWithError(err)
-		werr := cmd.Wait()
 		stopped := ctx.Err() != nil
 		cancel()
 		s.feeds.mu.Lock()
@@ -120,8 +95,31 @@ func (s *Server) startFeed(key string, req feedReq, what string) *feed {
 		}
 		s.feeds.mu.Unlock()
 		if !stopped {
-			s.cfg.Logf("feed: %s ended after %s: %v %s", what, time.Since(started).Round(time.Second), werr, strings.TrimSpace(stderr.String()))
+			s.cfg.Logf("feed: %s ended after %s: %v", what, time.Since(started).Round(time.Second), err)
 		}
 	}()
 	return f
+}
+
+// readFeed copies the channel's stream from the DVR to w until it ends.
+func (s *Server) readFeed(ctx context.Context, req feedReq, w io.Writer) error {
+	hr, err := http.NewRequestWithContext(ctx, http.MethodGet, s.cfg.DVR.Base.String()+dvr.LivePath(req.dev, req.number), nil)
+	if err != nil {
+		return err
+	}
+	s.cfg.DVR.SetAgent(hr)
+	// No client timeout: a channel plays as long as it is watched.
+	resp, err := http.DefaultTransport.RoundTrip(hr)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("DVR: %s", resp.Status)
+	}
+	_, err = io.Copy(w, resp.Body)
+	if err == nil {
+		err = io.EOF
+	}
+	return err
 }

@@ -18,7 +18,8 @@ const frameTicks = 3000
 // a decoder can begin there. Writing never waits for a reader: one that falls
 // too far behind skips to the next keyframe, with its timestamps shifted to
 // follow on from what it read, so that it plays on without a jump in time. A
-// stream with no video starts at any PES of its sound.
+// keyframe is known by its flag or by the start of its picture, as a broadcast
+// seldom flags them. A stream with no video starts at any PES of its sound.
 type Share struct {
 	mu      gosync.Mutex
 	partial []byte
@@ -26,7 +27,10 @@ type Share struct {
 	pmt     []byte
 	pmtPID  int
 	video   int
+	codec   byte   // the video's stream type
 	clock   int    // the PID whose PTS a reader follows on from: the video's, or the sound's
+	held    []byte // packets from the start of a video PES on, until it is known whether it is a keyframe
+	head    []byte // that PES's start
 	gop     []byte // from the newest keyframe on; nil until there is one
 	ready   chan struct{}
 	readers map[*ShareReader]struct{}
@@ -80,18 +84,42 @@ func (s *Share) add(p []byte) {
 				s.pmtPID, s.pat = pid, append(s.pat[:0], p...)
 			}
 		case pk.pid == s.pmtPID:
-			s.video, _ = pmtVideo(sec)
+			s.video, s.codec = pmtVideo(sec)
 			if s.video >= 0 {
 				s.clock = s.video
 			}
 			s.pmt = append(s.pmt[:0], p...)
 		}
 	}
+	if s.held != nil {
+		if pk.pid == s.video && pk.pusi {
+			s.release(false)
+		} else {
+			s.held = append(s.held, p...)
+			if pk.pid == s.video {
+				s.head = append(s.head, pk.payload...)
+				s.decide()
+			}
+			return
+		}
+	}
 	var key bool
 	switch {
 	case s.pat == nil || s.pmt == nil || !pk.pusi:
 	case s.video >= 0:
-		key = pk.pid == s.video && pk.rai
+		if pk.pid != s.video {
+			break
+		}
+		if pk.rai {
+			key = true
+			break
+		}
+		// A stream as broadcast seldom flags its keyframes: hold the
+		// PES until its start shows whether it is one.
+		s.held = append([]byte(nil), p...)
+		s.head = append(s.head[:0], pk.payload...)
+		s.decide()
+		return
 	default: // sound alone
 		if pk.pid != 0 && pk.pid != s.pmtPID {
 			if s.clock < 0 {
@@ -100,6 +128,36 @@ func (s *Share) add(p []byte) {
 			key = pk.pid == s.clock
 		}
 	}
+	s.pass(p, pk, key)
+}
+
+// headLimit is how much of a PES's start is looked at for a keyframe: its
+// headers (a picture's delimiter, SPS, PPS, SEI) often run past one packet.
+const headLimit = 1024
+
+// decide passes the held packets on once the PES's start shows whether it is
+// a keyframe.
+func (s *Share) decide() {
+	if keyframeStart(s.head, s.codec) {
+		s.release(true)
+	} else if len(s.head) >= headLimit {
+		s.release(false)
+	}
+}
+
+// release passes the held packets on, the first a keyframe or not.
+func (s *Share) release(key bool) {
+	held := s.held
+	s.held = nil
+	for off := 0; off+packetSize <= len(held); off += packetSize {
+		p := held[off : off+packetSize]
+		pk, _ := parsePacket(p)
+		s.pass(p, pk, key && off == 0)
+	}
+}
+
+// pass keeps a packet for readers to start at and gives it to each reader.
+func (s *Share) pass(p []byte, pk packet, key bool) {
 	if key {
 		s.gop = append(s.gop[:0], p...)
 		select {

@@ -12,7 +12,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"dlna/internal/config"
 	"dlna/internal/dvr"
@@ -211,8 +210,8 @@ func TestFitHeaderSent(t *testing.T) {
 	}
 }
 
-// A live channel is read whole from the DVR, and each client's conversion of
-// it, from that read, has the client's size and rates. The header goes with a
+// Each client's conversion of a live channel's shared read has the client's
+// size and rates. The header goes with a
 // stream, not with a refusal.
 func TestLiveOverrides(t *testing.T) {
 	dir := t.TempDir()
@@ -235,12 +234,7 @@ func TestLiveOverrides(t *testing.T) {
 			t.Fatal(err)
 		}
 		resp.Body.Close()
-		// The feed's ffmpeg runs beside the client's: wait for both.
-		var args []byte
-		for i := 0; i < 200 && resp.StatusCode == http.StatusOK && strings.Count(string(args), "\n") < 2; i++ {
-			time.Sleep(10 * time.Millisecond)
-			args, _ = os.ReadFile(filepath.Join(dir, "args"))
-		}
+		args, _ := os.ReadFile(filepath.Join(dir, "args"))
 		return resp, string(args)
 	}
 	for query, want := range map[string][2]string{
@@ -252,7 +246,7 @@ func TestLiveOverrides(t *testing.T) {
 		if got := resp.Header.Get("X-Transcode"); got != want[0] {
 			t.Errorf("%s: header %q, want %q", query, got, want[0])
 		}
-		if !strings.Contains(args, "-i "+d.URL+"/devices/ANY/channels/5000/stream.mpg -map 0:v:0? -map 0:a:0? -c copy ") || !strings.Contains(args, "-i pipe:0 ") || !strings.Contains(args, want[1]) {
+		if !strings.Contains(args, "-i pipe:0 ") || !strings.Contains(args, want[1]) {
 			t.Errorf("%s: args %s", query, args)
 		}
 	}
