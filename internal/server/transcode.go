@@ -31,12 +31,20 @@ func (s *Server) agent() string {
 // evenCeil rounds up to an even number: the DVR's encoder refuses odd heights.
 func evenCeil(n int) int { return n + n%2 }
 
-// videoFilter is the picture's way through ffmpeg: no faster than t.FPS, the
-// middle cut to the crop shape, then fitted inside the largest size (or
-// stretched to it), both sides even. A fit asked for with the stream first
+// interlacedField is the height of one field of a 1080i broadcast.
+const interlacedField = 540
+
+// videoFilter is the picture's way through ffmpeg: whole frames, no faster
+// than t.FPS, the middle cut to the crop shape, then fitted inside the largest
+// size (or stretched to it), both sides even. A fit asked for with the stream first
 // makes the pixels square, so that it works on the picture's shape as seen.
 func videoFilter(t config.Transcode) string {
 	f := []string{fmt.Sprintf(`fps=min(source_fps\,%d)`, t.FPS)}
+	if t.MaxHeight > interlacedField {
+		// Scaled to less, a 1080i picture's two fields are blended into
+		// each line, as the DVR's own small streams do it.
+		f = append([]string{"yadif=deint=interlaced"}, f...)
+	}
 	w, h := t.MaxWidth, t.MaxHeight
 	square := `scale=trunc(iw*sar/2)*2:ih,setsar=1`
 	inside := fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2", w, h)
@@ -69,12 +77,11 @@ func videoFilter(t config.Transcode) string {
 	return strings.Join(append(f, "format=yuv420p"), ",")
 }
 
-// ffmpegArgs converts input to an MPEG-TS on stdout as the settings say. For
-// the DVR's live HLS it starts at the newest segment rather than three back.
+// ffmpegArgs converts input to an MPEG-TS on stdout as the settings say.
 // userAgent, if there is one, is what ffmpeg calls itself to the server it reads.
 // start, if over 0, is where in the input to begin, in seconds: an input seek,
 // which ffmpeg makes with a byte range on a recording.
-func ffmpegArgs(t config.Transcode, input string, liveHLS bool, userAgent string, start float64) []string {
+func ffmpegArgs(t config.Transcode, input string, userAgent string, start float64) []string {
 	kbps := func(n int) string { return strconv.Itoa(n) + "k" }
 	var params []string
 	if t.SingleSlice {
@@ -91,9 +98,6 @@ func ffmpegArgs(t config.Transcode, input string, liveHLS bool, userAgent string
 	args := []string{"-hide_banner", "-loglevel", "error", "-nostdin"}
 	if userAgent != "" {
 		args = append(args, "-user_agent", userAgent)
-	}
-	if liveHLS {
-		args = append(args, "-live_start_index", "-1")
 	}
 	if start > 0 {
 		args = append(args, "-ss", strconv.FormatFloat(start, 'f', -1, 64))
@@ -121,7 +125,8 @@ func ffmpegArgs(t config.Transcode, input string, liveHLS bool, userAgent string
 // length, when known, is the recording's in seconds, for the answer. It stops
 // when the client goes. A live channel is kept near its live edge: a client
 // that reads slower than it plays skips ahead rather than falling behind.
-func (s *Server) transcode(w http.ResponseWriter, r *http.Request, t config.Transcode, client, what, input string, live bool, length float64) {
+// With feed, the input is the channel's shared feed rather than input.
+func (s *Server) transcode(w http.ResponseWriter, r *http.Request, t config.Transcode, client, what, input string, feed *feedReq, live bool, length float64) {
 	w.Header().Set("Content-Type", tsMIME)
 	w.Header().Set("Cache-Control", "no-cache, no-store")
 	w.Header().Set("TransferMode.DLNA.ORG", "Streaming")
@@ -176,7 +181,10 @@ func (s *Server) transcode(w http.ResponseWriter, r *http.Request, t config.Tran
 		what += fmt.Sprintf(" from %s", time.Duration(start*float64(time.Second)).Round(time.Second))
 	}
 	s.cfg.Logf("transcode: %s to %s (%s, %s)", what, ip, client, describeTranscode(t))
-	args := ffmpegArgs(t, input, live && strings.Contains(input, ".m3u8"), s.agent(), start)
+	args := ffmpegArgs(t, input, s.agent(), start)
+	if feed != nil {
+		args = ffmpegArgs(t, "pipe:0", "", start)
+	}
 	if live {
 		setSendBuffer(r, liveSendBuffer)
 	}
@@ -185,11 +193,17 @@ func (s *Server) transcode(w http.ResponseWriter, r *http.Request, t config.Tran
 		if live {
 			stall = stallLimit
 		}
-		sent, msg, err := s.runFFmpeg(w, r, args, live, stall, what, func(vw, vh int, fps float64) {
+		var in io.Reader
+		release := func() {}
+		if feed != nil {
+			in, release = s.joinFeed(*feed, what)
+		}
+		sent, msg, err := s.runFFmpeg(w, r, args, in, live, stall, what, func(vw, vh int, fps float64) {
 			w.Header().Set("X-Transcode", describeSent(t, vw, vh, fps))
 		})
+		release()
 		s.cfg.Logf("transcode: %s to %s ended after %s: %v %s", what, ip, time.Since(started).Round(time.Second), err, msg)
-		// The DVR's small stream sometimes fails to start, and ffmpeg is
+		// The DVR's stream sometimes fails to start, and ffmpeg is
 		// stopped after startLimit. The client has had nothing yet, so it is
 		// still waiting: try once more.
 		if sent > 0 || try == 2 || r.Context().Err() != nil {
@@ -228,8 +242,8 @@ func parseNPT(h string) (float64, bool) {
 // formatLimit is the most output held while looking for the picture's format.
 const formatLimit = 512 << 10
 
-// startLimit is how long ffmpeg may take to give its first bytes. The DVR's
-// small stream takes 6 to 15 s to start; when it fails, ffmpeg waits on.
+// startLimit is how long ffmpeg may take to give its first bytes. A tuner
+// takes a few seconds to start; when it fails, ffmpeg can wait on.
 const startLimit = 20 * time.Second
 
 // stallLimit is how long a write to a live stream's client may block. A
@@ -275,8 +289,9 @@ func ConnContext(ctx context.Context, c net.Conn) context.Context {
 // liveBacklog, so ffmpeg, and the DVR behind it, never wait for the client.
 // Otherwise ffmpeg waits for the client, unless a write blocks for stall.
 // The start of the output is held until it shows the picture's size and rate,
-// which go to format before anything is sent.
-func (s *Server) runFFmpeg(w http.ResponseWriter, r *http.Request, args []string, live bool, stall time.Duration, what string, format func(w, h int, fps float64)) (int64, string, error) {
+// which go to format before anything is sent. in, if not nil, is ffmpeg's
+// input; the caller stops it once this returns.
+func (s *Server) runFFmpeg(w http.ResponseWriter, r *http.Request, args []string, in io.Reader, live bool, stall time.Duration, what string, format func(w, h int, fps float64)) (int64, string, error) {
 	cmd := exec.CommandContext(r.Context(), s.cfg.FFmpeg, args...)
 	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 	cmd.WaitDelay = 3 * time.Second
@@ -286,8 +301,20 @@ func (s *Server) runFFmpeg(w http.ResponseWriter, r *http.Request, args []string
 	if err != nil {
 		return 0, "", err
 	}
+	var stdin io.WriteCloser
+	if in != nil {
+		if stdin, err = cmd.StdinPipe(); err != nil {
+			return 0, "", err
+		}
+	}
 	if err := cmd.Start(); err != nil {
 		return 0, "", err
+	}
+	if stdin != nil {
+		go func() {
+			io.Copy(stdin, in)
+			stdin.Close()
+		}()
 	}
 	var started atomic.Bool
 	timer := time.AfterFunc(startLimit, func() {

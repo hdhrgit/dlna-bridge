@@ -120,7 +120,7 @@ func audioArgs(a config.Audio, input, userAgent string) []string {
 	if userAgent != "" {
 		args = append(args, "-user_agent", userAgent)
 	}
-	args = append(args, "-live_start_index", "-1", "-i", input, "-map", "0:a:0", "-vn")
+	args = append(args, "-i", input, "-map", "0:a:0", "-vn")
 	switch a.Format {
 	case config.AudioCopy:
 		return append(args, "-c:a", "copy", "-f", "mpegts", "pipe:1")
@@ -165,8 +165,8 @@ func (s *Server) streamAudio(w http.ResponseWriter, r *http.Request) {
 	w = &countWriter{w, s.jobs.counter(id)}
 	started := time.Now()
 	s.cfg.Logf("audio: %s to %s (%s)", what, ip, name)
-	// The DVR sends the sound alone, so no video crosses the network to be
-	// thrown away here.
-	_, msg, err := s.runFFmpeg(w, r, audioArgs(prof.Audio, s.cfg.DVR.SoundStreamURL(dev, number), s.agent()), false, stallLimit, what, nil)
+	in, release := s.joinFeed(feedReq{dev: dev, number: number}, what)
+	_, msg, err := s.runFFmpeg(w, r, audioArgs(prof.Audio, "pipe:0", ""), in, false, stallLimit, what, nil)
+	release()
 	s.cfg.Logf("audio: %s to %s ended after %s: %v %s", what, ip, time.Since(started).Round(time.Second), err, msg)
 }

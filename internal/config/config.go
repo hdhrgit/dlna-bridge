@@ -90,8 +90,9 @@ type Transcode struct {
 	AudioKbps     int    `json:"audio_kbps"`
 	AudioChannels int    `json:"audio_channels"`
 	H264Profile   string `json:"h264_profile"` // baseline, main or high
-	// PreScale has the DVR make a small stream first for live channels, which
-	// costs the DVR less than decoding the full picture here.
+	// PreScale is no longer used: live channels are read whole, once for all
+	// the clients watching, and scaled here. It is kept so that settings
+	// written before still load.
 	PreScale bool `json:"pre_scale"`
 	// ExactSize scales to exactly MaxWidth x MaxHeight, stretching a little if
 	// the shapes differ, instead of fitting inside.

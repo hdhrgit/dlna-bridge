@@ -73,6 +73,7 @@ type Server struct {
 	plans   plans
 	clients clientLog
 	jobs    jobs
+	feeds   feeds
 	notices chan struct{} // limits event notices going out at once
 
 	regMu sync.Mutex

@@ -607,33 +607,6 @@ func (c *Client) ClientInfo(ctx context.Context, id string) (ClientEntry, bool, 
 	return ClientEntry{}, false, nil
 }
 
-// SoundStreamURL asks the DVR for a channel's sound alone, as it comes: an HLS
-// stream with no video and the audio unconverted.
-func (c *Client) SoundStreamURL(device, number string) string {
-	if device == "" {
-		device = "ANY"
-	}
-	return c.Base.String() + "/devices/" + url.PathEscape(device) + "/channels/" + url.PathEscape(number) + "/hls/master.m3u8?acodec=copy&vcodec=none"
-}
-
-// SmallStreamAudioKbps is the sound's bitrate in the DVR's small stream.
-const SmallStreamAudioKbps = 64
-
-// SmallStreamURL asks the DVR's transcoder for a small H.264/AAC HLS stream of
-// a channel. height must be even, and bitrate is the total in kbps.
-func (c *Client) SmallStreamURL(device, number string, height, kbps int) string {
-	if device == "" {
-		device = "ANY"
-	}
-	q := url.Values{}
-	q.Set("vcodec", "h264")
-	q.Set("acodec", "aac")
-	q.Set("resolution", strconv.Itoa(height))
-	q.Set("bitrate", strconv.Itoa(kbps))
-	q.Set("abitrate", strconv.Itoa(SmallStreamAudioKbps))
-	return c.Base.String() + "/devices/" + url.PathEscape(device) + "/channels/" + url.PathEscape(number) + "/hls/master.m3u8?" + q.Encode()
-}
-
 // numberLess orders channel numbers such as 5, 5.1 and 12 by value.
 func numberLess(a, b string) bool {
 	fa, ea := strconv.ParseFloat(a, 64)

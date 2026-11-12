@@ -42,16 +42,7 @@ func (s *Server) streamLive(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	t := prof.Transcode
-	input := s.cfg.DVR.Base.String() + dvr.LivePath(dev, number)
-	if t.PreScale {
-		// The DVR scales the picture down first, which costs it less than
-		// sending the full one for us to decode. Its sound is no better than
-		// SmallStreamAudioKbps, so more would only be bigger.
-		t.AudioKbps = min(t.AudioKbps, dvr.SmallStreamAudioKbps)
-		input = s.cfg.DVR.SmallStreamURL(dev, number, evenCeil(t.MaxHeight), t.VideoKbps*2+t.AudioKbps)
-	}
-	s.transcode(w, r, t, name, number+" "+ch.Name, input, true, 0)
+	s.transcode(w, r, prof.Transcode, name, number+" "+ch.Name, "", &feedReq{dev: dev, number: number}, true, 0)
 }
 
 func (s *Server) streamRecording(w http.ResponseWriter, r *http.Request) {
@@ -76,7 +67,7 @@ func (s *Server) streamRecording(w http.ResponseWriter, r *http.Request) {
 	if f, found, err := s.cfg.DVR.Recording(r.Context(), id); err == nil && found {
 		length = f.Duration
 	}
-	s.transcode(w, r, prof.Transcode, name, "recording "+id, s.cfg.DVR.Base.String()+dvr.RecordingPath(id), false, length)
+	s.transcode(w, r, prof.Transcode, name, "recording "+id, s.cfg.DVR.Base.String()+dvr.RecordingPath(id), nil, false, length)
 }
 
 func (s *Server) proxy(w http.ResponseWriter, r *http.Request, dvrPath, features string) {

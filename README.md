@@ -141,8 +141,8 @@ names it by that TV's own address.
   or channel. Episodes come back titled with their show.
 * **Audio** and **Audio by source**: the live channels as sound alone, for players without a screen, in the
   client's audio format: AAC or MP3 at the client's bitrate, or the channel's own sound unconverted (MPEG-TS).
-  The DVR sends the sound alone (its HLS with `vcodec=none&acodec=copy`), a few seconds behind its full stream;
-  ffmpeg converts it, counted among the conversions at once.
+  The sound comes from the channel's shared read (below); ffmpeg converts it, counted among the conversions at
+  once.
 * **Recording now**: what the DVR has not finished recording, from the start. Left out when nothing is.
 
 TVs keep the lists they have browsed. The bridge follows the DVR's own event stream (`/dvr/events/subscribe`),
@@ -168,7 +168,7 @@ take a playlist.
 One client is **built in**: `esp32`, for the [channelstv](https://github.com/hdhrgit/channelstv) boards, used
 only by name (`?profile=esp32`). It converts to H.264 Constrained Baseline with one slice per frame and no
 deblocking filter (less work for the boards' decoder), 240x144 stretched, 24 fps, 250 kbit/s video, AAC mono
-64 kbit/s, from the DVR's small stream for live channels, with commercials cut and seeking by time; each board
+64 kbit/s, with commercials cut and seeking by time; each board
 asks for its own size with the overrides below. It needs no
 setting up. The settings page shows it read-only, with *Edit a copy*: a client of the same name in `config.json`
 takes its place, and removing that client brings the built-in one back.
@@ -182,10 +182,15 @@ Each client and the default have a **profile**:
 | Commercials | **Cut out**, or **Play** (pass through). |
 | Resume and watched | **Shared with the DVR** (the default): where the client leaves a recording goes to the DVR, and one played to the end is marked watched, so the Channels apps resume there too. **Kept here**: the DVR is not told. |
 | Seeking | **By bytes** (the default): a recording with its breaks cut has a length and takes byte ranges, which every TV knows; the bridge works out all the cuts before the first byte. A converted recording has no length and does not seek. **By time**: cut and converted recordings are offered with DLNA time seek (`DLNA.ORG_OP=10`) and no length, and the TV asks for a time to start from (`TimeSeekRange.dlna.org`). A cut one starts at once, each cut worked out just before playback reaches it; a converted one starts with ffmpeg seeking the input by byte ranges (with commercials cut, the seconds leave the breaks out). The answer carries the range served; a time seek from a client set to seek by bytes gets 406. Not every TV seeks by time; LG TVs do not. |
-| Converted | The largest width and height (the picture is fitted inside, both sides even), frames per second, video and audio kbps, audio channels, H.264 profile (baseline has no B-frames and no CABAC, for small decoders). Live channels can come from a small stream the DVR makes first, which costs it less than decoding the full picture here, but the DVR's small stream runs about 10 s behind its full one; leave it off where delay matters. A live channel is kept near its live edge: a client that falls more than 8 s behind skips ahead to the newest keyframe. The result is an MPEG-TS with no length, so it does not seek by bytes. |
+| Converted | The largest width and height (the picture is fitted inside, both sides even), frames per second, video and audio kbps, audio channels, H.264 profile (baseline has no B-frames and no CABAC, for small decoders). A picture over 540 lines high is deinterlaced; a smaller one has the two fields of a 1080i broadcast blended by the scaling. A live channel is kept near its live edge: a client that falls more than 8 s behind skips ahead to the newest keyframe. The result is an MPEG-TS with no length, so it does not seek by bytes. |
 
 At most *Conversions at once* run, across all clients; the rest get a 503. Each viewer has an ffmpeg of their
-own, which stops when they leave.
+own, which stops when they leave. A live channel is read from the DVR once, whole (`stream.mpg`), however many
+clients convert it, and each conversion scales that read as it needs: the DVR takes every read of a channel
+from one address for one viewer, and two of its HLS streams of a channel from the bridge would take each
+other's segments. A client that joins starts at the newest keyframe; a conversion that cannot keep up skips
+ahead to the next keyframe rather than hold the read back. Each conversion decodes the full picture, about
+half a CPU core for a 1080i channel. The read stops when the last client leaves.
 
 A converted stream (`/stream/live/N`, `/stream/rec/ID`, `/stream/adfree/ID`) can change its profile's picture
 and sound for one request, e.g. `?profile=NAME&w=320&h=180&fit=scale&fps=24&vb=400&ab=64`: `w` and `h` the
@@ -193,10 +198,9 @@ size (rounded down to even), `fit` one of `scale` (stretched to that size), `cro
 stretched), `width` (the whole picture, as wide as that size allows, e.g. 448x252 from 16:9 at 448x368),
 `height` (as tall as that size, the sides cut evenly) or `fill` (the whole size covered, what is over cut
 evenly), `fps` the most frames per second, `vb` and `ab` the video and audio kbit/s. The rest (codec,
-H.264 profile, slices, small stream, commercials, audio channels) stays the profile's. Values beyond the limits
+H.264 profile, slices, commercials, audio channels) stays the profile's. Values beyond the limits
 under *Other settings* (by default 640x480, 30 fps, 1500 and 128 kbit/s) are held to them; values that are
-not numbers are ignored, as are overrides on a stream that is not converted. A live channel from the DVR's
-small stream gets at most 64 kbit/s audio, which is all that stream has. `GET /api/caps` lists the overrides,
+not numbers are ignored, as are overrides on a stream that is not converted. `GET /api/caps` lists the overrides,
 the fits, the limits and the built-in profiles (`"profiles": ["esp32"]`), and each converted stream carries
 what it was made with, e.g. `X-Transcode: 320x180 fit=scale fps=24 vb=400 ab=64`, with the size and frame rate
 actually sent. A `HEAD`, which reads nothing, gives the most where the source decides them.

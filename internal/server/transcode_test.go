@@ -76,7 +76,7 @@ func recordingServer(t *testing.T, size int, live, rec time.Duration) (*Server, 
 	settings, _ := config.Open("", config.Config{})
 	s := New(Config{FFmpeg: ff, Settings: settings, Logf: func(string, ...any) {}})
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		s.transcode(w, r, config.DefaultTranscode(), "Tiny", "recording 1", "in", false, 0)
+		s.transcode(w, r, config.DefaultTranscode(), "Tiny", "recording 1", "in", nil, false, 0)
 	}))
 	l := newPipeListener()
 	srv.Listener = l

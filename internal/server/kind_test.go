@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"dlna/internal/config"
 	"dlna/internal/dvr"
@@ -65,12 +66,12 @@ func TestKinds(t *testing.T) {
 	}
 }
 
-// Listen asks the DVR for the sound alone, unconverted, from the newest part
-// of its live HLS, and converts it as the profile says.
+// Listen reads the channel's feed, the whole channel from the DVR, and
+// converts its sound as the profile says.
 func TestListenFromTheDVR(t *testing.T) {
 	dir := t.TempDir()
 	ff := filepath.Join(dir, "ffmpeg")
-	if err := os.WriteFile(ff, []byte("#!/bin/sh\necho \"$@\" > "+dir+"/args\n"), 0o755); err != nil {
+	if err := os.WriteFile(ff, []byte("#!/bin/sh\necho \"$@\" >> "+dir+"/args\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	d := fakeDVR(t)
@@ -89,18 +90,24 @@ func TestListenFromTheDVR(t *testing.T) {
 	srv := httptest.NewServer(New(Config{DVR: c, FFmpeg: ff, Settings: settings, Logf: func(string, ...any) {}}).Handler())
 	defer srv.Close()
 	for query, want := range map[string]string{
-		"profile=aac":         "-live_start_index -1 -i " + d.URL + "/devices/ANY/channels/5000/hls/master.m3u8?acodec=copy&vcodec=none -map 0:a:0 -vn -c:a aac -f adts -b:a 96k -ac 2 pipe:1",
+		"profile=aac":         "-i " + d.URL + "/devices/ANY/channels/5000/stream.mpg -map 0:v:0? -map 0:a:0? -c copy",
+		"profile=aac ":        "-i pipe:0 -map 0:a:0 -vn -c:a aac -f adts -b:a 96k -ac 2 pipe:1",
 		"profile=mp3":         "-c:a libmp3lame -f mp3 -b:a 192k -ac 2 pipe:1",
 		"profile=copy":        "-map 0:a:0 -vn -c:a copy -f mpegts pipe:1",
-		"profile=copy&dev=A1": "-i " + d.URL + "/devices/A1/channels/5000/hls/master.m3u8?acodec=copy&vcodec=none ",
+		"profile=copy&dev=A1": "-i " + d.URL + "/devices/A1/channels/5000/stream.mpg ",
 	} {
 		os.Remove(filepath.Join(dir, "args"))
-		resp, err := http.Get(srv.URL + "/stream/audio/5000?" + query)
+		resp, err := http.Get(srv.URL + "/stream/audio/5000?" + strings.TrimSpace(query))
 		if err != nil {
 			t.Fatal(err)
 		}
 		resp.Body.Close()
-		args, _ := os.ReadFile(filepath.Join(dir, "args"))
+		// The feed's ffmpeg runs beside the client's: wait for both.
+		var args []byte
+		for i := 0; i < 200 && strings.Count(string(args), "\n") < 2; i++ {
+			time.Sleep(10 * time.Millisecond)
+			args, _ = os.ReadFile(filepath.Join(dir, "args"))
+		}
 		if !strings.Contains(string(args), want) {
 			t.Errorf("%s: no %q in %s", query, want, args)
 		}

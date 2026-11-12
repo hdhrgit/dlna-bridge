@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"dlna/internal/config"
 	"dlna/internal/dvr"
@@ -31,7 +32,7 @@ func boardClients() []config.Client {
 // A board that sends no overrides gets the same ffmpeg command as before
 // overrides were added.
 func TestBoardArgsUnchanged(t *testing.T) {
-	head := []string{"-hide_banner", "-loglevel", "error", "-nostdin", "-user_agent", "UA", "-live_start_index", "-1", "-i", "IN", "-map", "0:v:0", "-map", "0:a:0?", "-vf"}
+	head := []string{"-hide_banner", "-loglevel", "error", "-nostdin", "-user_agent", "UA", "-i", "IN", "-map", "0:v:0", "-map", "0:a:0?", "-vf"}
 	tail := []string{"-c:v", "libx264", "-profile:v", "baseline", "-preset", "veryfast", "-tune", "zerolatency", "-x264-params", "sliced-threads=0:slices=1", "-g", "48", "-b:v", "250k", "-maxrate", "300k", "-bufsize", "500k", "-a53cc", "0", "-c:a", "aac", "-ac", "1", "-ar", "44100", "-b:a", "64k", "-flush_packets", "1", "-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0", "pipe:1"}
 	want := map[string]string{
 		"esp32":     `fps=min(source_fps\,24),scale=240:144,setsar=1,format=yuv420p`,
@@ -41,7 +42,7 @@ func TestBoardArgsUnchanged(t *testing.T) {
 	s := New(Config{Settings: settings})
 	for name, vf := range want {
 		_, prof := s.profileFor(httptest.NewRequest("GET", "/stream/live/5?profile="+name, nil))
-		got := ffmpegArgs(prof.Transcode, "IN", true, "UA", 0)
+		got := ffmpegArgs(prof.Transcode, "IN", "UA", 0)
 		exp := append(append(append([]string{}, head...), vf), tail...)
 		if !reflect.DeepEqual(got, exp) {
 			t.Errorf("%s:\n got %q\nwant %q", name, got, exp)
@@ -210,9 +211,9 @@ func TestFitHeaderSent(t *testing.T) {
 	}
 }
 
-// A live channel's small stream from the DVR is asked for at the height
-// converted to, and its sound is never converted to more than the DVR sends.
-// The header goes with a stream, not with a refusal.
+// A live channel is read whole from the DVR, and each client's conversion of
+// it, from that read, has the client's size and rates. The header goes with a
+// stream, not with a refusal.
 func TestLiveOverrides(t *testing.T) {
 	dir := t.TempDir()
 	ff := filepath.Join(dir, "ffmpeg")
@@ -234,19 +235,24 @@ func TestLiveOverrides(t *testing.T) {
 			t.Fatal(err)
 		}
 		resp.Body.Close()
-		args, _ := os.ReadFile(filepath.Join(dir, "args"))
+		// The feed's ffmpeg runs beside the client's: wait for both.
+		var args []byte
+		for i := 0; i < 200 && resp.StatusCode == http.StatusOK && strings.Count(string(args), "\n") < 2; i++ {
+			time.Sleep(10 * time.Millisecond)
+			args, _ = os.ReadFile(filepath.Join(dir, "args"))
+		}
 		return resp, string(args)
 	}
 	for query, want := range map[string][2]string{
-		"profile=esp32":                           {"240x144 fit=scale fps=24 vb=250 ab=64", "abitrate=64&acodec=aac&bitrate=564&resolution=144&vcodec=h264"},
-		"profile=esp32_4x3":                       {"240x192 fit=crop43 fps=24 vb=250 ab=64", "abitrate=64&acodec=aac&bitrate=564&resolution=192&vcodec=h264"},
-		"profile=esp32&w=320&h=181&vb=400&ab=128": {"320x180 fit=scale fps=24 vb=400 ab=64", "abitrate=64&acodec=aac&bitrate=864&resolution=180&vcodec=h264"},
+		"profile=esp32":                           {"240x144 fit=scale fps=24 vb=250 ab=64", "scale=240:144,setsar=1,format=yuv420p -c:v libx264 -profile:v baseline -preset veryfast -tune zerolatency -x264-params sliced-threads=0:slices=1 -g 48 -b:v 250k -maxrate 300k -bufsize 500k -a53cc 0 -c:a aac -ac 1 -ar 44100 -b:a 64k "},
+		"profile=esp32_4x3":                       {"240x192 fit=crop43 fps=24 vb=250 ab=64", "scale=240:192,setsar=1,format=yuv420p "},
+		"profile=esp32&w=320&h=181&vb=400&ab=128": {"320x180 fit=scale fps=24 vb=400 ab=128", "scale=320:180,setsar=1,format=yuv420p -c:v libx264 -profile:v baseline -preset veryfast -tune zerolatency -x264-params sliced-threads=0:slices=1 -g 48 -b:v 400k -maxrate 480k -bufsize 800k -a53cc 0 -c:a aac -ac 1 -ar 44100 -b:a 128k "},
 	} {
 		resp, args := get(query)
 		if got := resp.Header.Get("X-Transcode"); got != want[0] {
 			t.Errorf("%s: header %q, want %q", query, got, want[0])
 		}
-		if !strings.Contains(args, "/devices/ANY/channels/5000/hls/master.m3u8?"+want[1]+" ") || !strings.Contains(args, " -b:a 64k ") {
+		if !strings.Contains(args, "-i "+d.URL+"/devices/ANY/channels/5000/stream.mpg -map 0:v:0? -map 0:a:0? -c copy ") || !strings.Contains(args, "-i pipe:0 ") || !strings.Contains(args, want[1]) {
 			t.Errorf("%s: args %s", query, args)
 		}
 	}

@@ -606,12 +606,12 @@ func TestGrowingRecording(t *testing.T) {
 // 4:3 of the picture stretched to exactly its size.
 func TestFFmpegArgs(t *testing.T) {
 	tc := config.DefaultTranscode()
-	args := strings.Join(ffmpegArgs(tc, "in", false, "", 0), " ")
+	args := strings.Join(ffmpegArgs(tc, "in", "", 0), " ")
 	if !strings.Contains(args, `-vf fps=min(source_fps\,24),scale=240:240:force_original_aspect_ratio=decrease,`) || strings.Contains(args, "x264-params") {
 		t.Errorf("default: %s", args)
 	}
 	tc.MaxHeight, tc.ExactSize, tc.Crop, tc.SingleSlice = 192, true, "4:3", true
-	args = strings.Join(ffmpegArgs(tc, "in", false, "", 0), " ")
+	args = strings.Join(ffmpegArgs(tc, "in", "", 0), " ")
 	for _, want := range []string{
 		`-vf fps=min(source_fps\,24),crop=min(iw\,ih*4/3):min(ih\,iw*3/4),scale=240:192,setsar=1,format=yuv420p `,
 		"-tune zerolatency -x264-params sliced-threads=0:slices=1 -g 48 ",
@@ -621,15 +621,12 @@ func TestFFmpegArgs(t *testing.T) {
 		}
 	}
 	tc.NoDeblock = true
-	if args := strings.Join(ffmpegArgs(tc, "in", false, "", 0), " "); !strings.Contains(args, "-x264-params sliced-threads=0:slices=1:no-deblock=1 -g 48 ") {
+	if args := strings.Join(ffmpegArgs(tc, "in", "", 0), " "); !strings.Contains(args, "-x264-params sliced-threads=0:slices=1:no-deblock=1 -g 48 ") {
 		t.Errorf("no deblock: %s", args)
 	}
 	tc.SingleSlice = false
-	if args := strings.Join(ffmpegArgs(tc, "in", false, "", 0), " "); !strings.Contains(args, "-x264-params no-deblock=1 -g 48 ") {
+	if args := strings.Join(ffmpegArgs(tc, "in", "", 0), " "); !strings.Contains(args, "-x264-params no-deblock=1 -g 48 ") {
 		t.Errorf("no deblock, slices: %s", args)
-	}
-	if args := strings.Join(ffmpegArgs(tc, "in", true, "", 0), " "); !strings.Contains(args, "-live_start_index -1 -i in ") {
-		t.Errorf("live HLS: %s", args)
 	}
 }
 
@@ -637,19 +634,19 @@ func TestFFmpegArgs(t *testing.T) {
 // start it begins at the top.
 func TestFFmpegStart(t *testing.T) {
 	tc := config.DefaultTranscode()
-	if args := strings.Join(ffmpegArgs(tc, "in", false, "", 90), " "); !strings.Contains(args, " -ss 90 -i in ") {
+	if args := strings.Join(ffmpegArgs(tc, "in", "", 90), " "); !strings.Contains(args, " -ss 90 -i in ") {
 		t.Errorf("start 90: %s", args)
 	}
-	if args := strings.Join(ffmpegArgs(tc, "in", false, "", 12.5), " "); !strings.Contains(args, " -ss 12.5 -i in ") {
+	if args := strings.Join(ffmpegArgs(tc, "in", "", 12.5), " "); !strings.Contains(args, " -ss 12.5 -i in ") {
 		t.Errorf("start 12.5: %s", args)
 	}
-	if args := strings.Join(ffmpegArgs(tc, "in", false, "", 0), " "); strings.Contains(args, "-ss") {
+	if args := strings.Join(ffmpegArgs(tc, "in", "", 0), " "); strings.Contains(args, "-ss") {
 		t.Errorf("no start: %s", args)
 	}
 }
 
-// An ffmpeg that ends with nothing, as when the DVR's small stream fails to
-// start, is run once more while the client waits.
+// An ffmpeg that ends with nothing, as when the DVR's stream fails to start,
+// is run once more while the client waits.
 func TestTranscodeRetries(t *testing.T) {
 	dir := t.TempDir()
 	ff := filepath.Join(dir, "ffmpeg")
@@ -660,7 +657,7 @@ func TestTranscodeRetries(t *testing.T) {
 	settings, _ := config.Open("", config.Config{})
 	s := New(Config{FFmpeg: ff, Settings: settings})
 	w := httptest.NewRecorder()
-	s.transcode(w, httptest.NewRequest("GET", "/stream/live/1", nil), config.DefaultTranscode(), "Tiny", "1", "in", false, 0)
+	s.transcode(w, httptest.NewRequest("GET", "/stream/live/1", nil), config.DefaultTranscode(), "Tiny", "1", "in", nil, false, 0)
 	if got := w.Body.String(); got != "picture\n" {
 		t.Errorf("got %q", got)
 	}
@@ -1072,7 +1069,7 @@ func TestUserAgentToTheDVR(t *testing.T) {
 			t.Errorf("%s asked as %q", path, got)
 		}
 	}
-	if args := strings.Join(ffmpegArgs(config.DefaultTranscode(), "http://dvr/x", false, "dlna-bridge/9.9", 0), " "); !strings.Contains(args, "-user_agent dlna-bridge/9.9 -i http://dvr/x") {
+	if args := strings.Join(ffmpegArgs(config.DefaultTranscode(), "http://dvr/x", "dlna-bridge/9.9", 0), " "); !strings.Contains(args, "-user_agent dlna-bridge/9.9 -i http://dvr/x") {
 		t.Errorf("ffmpeg: %s", args)
 	}
 }
@@ -2123,5 +2120,18 @@ func TestAPIBrowse(t *testing.T) {
 	}
 	if got := get("nope"); len(got) != 0 {
 		t.Errorf("unknown folder: %+v", got)
+	}
+}
+
+// A picture bigger than a 1080i field is deinterlaced; a smaller one has its
+// fields blended by the scaling.
+func TestDeinterlace(t *testing.T) {
+	tc := config.DefaultTranscode()
+	if vf := videoFilter(tc); strings.Contains(vf, "yadif") {
+		t.Errorf("240 high: %s", vf)
+	}
+	tc.MaxWidth, tc.MaxHeight = 1280, 720
+	if vf := videoFilter(tc); !strings.HasPrefix(vf, "yadif=deint=interlaced,fps=") {
+		t.Errorf("720 high: %s", vf)
 	}
 }

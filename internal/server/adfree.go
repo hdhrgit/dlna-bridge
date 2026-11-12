@@ -203,7 +203,7 @@ func (s *Server) streamAdFree(w http.ResponseWriter, r *http.Request) {
 			if f, found, err := s.cfg.DVR.Recording(r.Context(), id); err == nil && found {
 				length = f.AdFree(-1)
 			}
-			s.transcode(w, r, prof.Transcode, name, "recording "+id, s.cfg.SelfURL+"/stream/adfree/"+url.PathEscape(id)+"?raw=1", false, length)
+			s.transcode(w, r, prof.Transcode, name, "recording "+id, s.cfg.SelfURL+"/stream/adfree/"+url.PathEscape(id)+"?raw=1", nil, false, length)
 			return
 		}
 	}
