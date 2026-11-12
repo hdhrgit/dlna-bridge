@@ -189,15 +189,17 @@ own, which stops when they leave.
 
 A converted stream (`/stream/live/N`, `/stream/rec/ID`, `/stream/adfree/ID`) can change its profile's picture
 and sound for one request, e.g. `?profile=NAME&w=320&h=180&fit=scale&fps=24&vb=400&ab=64`: `w` and `h` the
-size (rounded down to even), `fit` either `scale` (stretched to that size) or `crop43` (the middle 4:3, then
-stretched), `fps` the most frames per second, `vb` and `ab` the video and audio kbit/s. The rest (codec,
+size (rounded down to even), `fit` one of `scale` (stretched to that size), `crop43` (the middle 4:3, then
+stretched), `width` (the whole picture, as wide as that size allows, e.g. 448x252 from 16:9 at 448x368),
+`height` (as tall as that size, the sides cut evenly) or `fill` (the whole size covered, what is over cut
+evenly), `fps` the most frames per second, `vb` and `ab` the video and audio kbit/s. The rest (codec,
 H.264 profile, slices, small stream, commercials, audio channels) stays the profile's. Values beyond the limits
 under *Other settings* (by default 640x480, 30 fps, 1500 and 128 kbit/s) are held to them; values that are
 not numbers are ignored, as are overrides on a stream that is not converted. A live channel from the DVR's
 small stream gets at most 64 kbit/s audio, which is all that stream has. `GET /api/caps` lists the overrides,
-the limits and the built-in profiles (`"profiles": ["esp32"]`), and each converted stream carries what it was made with, e.g.
-`X-Transcode: 320x180 fit=scale fps=24 vb=400 ab=64`. For a profile that fits the picture inside its size
-(`fit=inside`), the size given is that box.
+the fits, the limits and the built-in profiles (`"profiles": ["esp32"]`), and each converted stream carries
+what it was made with, e.g. `X-Transcode: 320x180 fit=scale fps=24 vb=400 ab=64`, with the size and frame rate
+actually sent. A `HEAD`, which reads nothing, gives the most where the source decides them.
 
 ## Commercials
 

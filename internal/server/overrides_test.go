@@ -1,7 +1,9 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -62,6 +64,9 @@ func TestOverrides(t *testing.T) {
 		{"w=99999999999999999999&vb=99999999999999999999&h=-99999999999999999999", "640x144 fit=scale fps=24 vb=1500 ab=64"}, // too big: the most
 		{"w=abc&h=-5&fps=0&vb=1.5&fit=zoom", "240x144 fit=scale fps=24 vb=250 ab=64"},                                        // not values: ignored
 		{"w=448&h=252&fit=crop43", "448x252 fit=crop43 fps=24 vb=250 ab=64"},
+		{"w=448&h=368&fit=width&fps=15", "448x368 fit=width fps=15 vb=250 ab=64"}, // the most: the source decides
+		{"w=448&h=368&fit=height", "448x368 fit=height fps=24 vb=250 ab=64"},
+		{"w=448&h=368&fit=fill", "448x368 fit=fill fps=24 vb=250 ab=64"},
 	} {
 		q, _ := url.ParseQuery(c.query)
 		if got := describeTranscode(withOverrides(base, q, lim)); got != c.want {
@@ -76,6 +81,22 @@ func TestOverrides(t *testing.T) {
 	got := withOverrides(config.DefaultTranscode(), url.Values{"w": {"320"}, "h": {"240"}, "fit": {"crop43"}}, lim)
 	if vf := videoFilter(got); vf != `fps=min(source_fps\,24),crop=min(iw\,ih*4/3):min(ih\,iw*3/4),scale=320:240,setsar=1,format=yuv420p` {
 		t.Errorf("crop43: %s", vf)
+	}
+	// The fits work on square pixels, from the profile's crop or none.
+	sq := `fps=min(source_fps\,15),scale=trunc(iw*sar/2)*2:ih,setsar=1,`
+	for fit, want := range map[string]string{
+		"width":  sq + `scale=448:368:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1,format=yuv420p`,
+		"height": sq + `crop=min(iw\,ceil(ih*448/368/2)*2+2):ih,scale=-2:368,crop=min(iw\,448):368,setsar=1,format=yuv420p`,
+		"fill":   sq + `crop=min(iw\,ih*448/368):min(ih\,iw*368/448),scale=448:368,setsar=1,format=yuv420p`,
+	} {
+		got := withOverrides(crop, url.Values{"w": {"448"}, "h": {"368"}, "fps": {"15"}, "fit": {fit}}, lim)
+		if vf := videoFilter(got); vf != want {
+			t.Errorf("%s:\n got %s\nwant %s", fit, vf, want)
+		}
+		// scale and crop43 put the profile's way back.
+		if back := withOverrides(got, url.Values{"fit": {"crop43"}}, lim); back.Fit != "" || back.Crop != "4:3" || !back.ExactSize {
+			t.Errorf("%s then crop43: %+v", fit, back)
+		}
 	}
 	// Codec, profile and slices stay the base profile's.
 	got = withOverrides(base, url.Values{"w": {"320"}, "h": {"180"}}, lim)
@@ -104,11 +125,11 @@ func TestCaps(t *testing.T) {
 		b, _ := json.Marshal(v)
 		return string(b)
 	}
-	if got := get(newTestServer(t, true)); got != `{"max":{"ab":128,"fps":30,"h":480,"vb":1500,"w":640},"overrides":["w","h","fit","fps","vb","ab"],"profiles":["esp32"]}` {
+	if got := get(newTestServer(t, true)); got != `{"fits":["scale","crop43","width","height","fill"],"max":{"ab":128,"fps":30,"h":480,"vb":1500,"w":640},"overrides":["w","h","fit","fps","vb","ab"],"profiles":["esp32"]}` {
 		t.Errorf("default: %s", got)
 	}
 	s := newServerWith(t, config.Config{Limits: config.Limits{MaxWidth: 448, MaxHeight: 252, FPS: 25, VideoKbps: 800, AudioKbps: 96}})
-	if got := get(s); got != `{"max":{"ab":96,"fps":25,"h":252,"vb":800,"w":448},"overrides":["w","h","fit","fps","vb","ab"],"profiles":["esp32"]}` {
+	if got := get(s); got != `{"fits":["scale","crop43","width","height","fill"],"max":{"ab":96,"fps":25,"h":252,"vb":800,"w":448},"overrides":["w","h","fit","fps","vb","ab"],"profiles":["esp32"]}` {
 		t.Errorf("from the config: %s", got)
 	}
 }
@@ -145,6 +166,46 @@ func TestTranscodeHeader(t *testing.T) {
 	} {
 		if got := head(path).Get("X-Transcode"); got != want {
 			t.Errorf("%s: got %q, want %q", path, got, want)
+		}
+	}
+}
+
+// A stream with a fit that depends on the source says the size and rate in
+// what it sends; a HEAD, with nothing read, the most.
+func TestFitHeaderSent(t *testing.T) {
+	dir := t.TempDir()
+	ff := filepath.Join(dir, "ffmpeg")
+	ts, err := filepath.Abs("testdata/tall.ts") // 208x368 at 15 fps
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ff, []byte("#!/bin/sh\ncat "+ts+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	d := fakeDVR(t)
+	c, err := dvr.New(d.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := httptest.NewServer(New(Config{DVR: c, FFmpeg: ff, Settings: mustSettings(t, config.Config{Clients: boardClients()}), Logf: func(string, ...any) {}}).Handler())
+	defer s.Close()
+	want, _ := os.ReadFile(ts)
+	for method, header := range map[string]string{
+		"GET":  "208x368 fit=height fps=15 vb=250 ab=64",
+		"HEAD": "448x368 fit=height fps=24 vb=250 ab=64",
+	} {
+		req, _ := http.NewRequest(method, s.URL+"/stream/rec/17?profile=esp32&w=448&h=368&fit=height", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if got := resp.Header.Get("X-Transcode"); got != header {
+			t.Errorf("%s: header %q, want %q", method, got, header)
+		}
+		if method == "GET" && !bytes.Equal(body, want) {
+			t.Errorf("GET: %d bytes, want %d", len(body), len(want))
 		}
 	}
 }

@@ -33,9 +33,31 @@ func evenCeil(n int) int { return n + n%2 }
 
 // videoFilter is the picture's way through ffmpeg: no faster than t.FPS, the
 // middle cut to the crop shape, then fitted inside the largest size (or
-// stretched to it), both sides even.
+// stretched to it), both sides even. A fit asked for with the stream first
+// makes the pixels square, so that it works on the picture's shape as seen.
 func videoFilter(t config.Transcode) string {
 	f := []string{fmt.Sprintf(`fps=min(source_fps\,%d)`, t.FPS)}
+	w, h := t.MaxWidth, t.MaxHeight
+	square := `scale=trunc(iw*sar/2)*2:ih,setsar=1`
+	inside := fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2", w, h)
+	switch t.Fit {
+	case config.FitWidth:
+		return strings.Join(append(f, square, inside, "setsar=1", "format=yuv420p"), ",")
+	case config.FitHeight:
+		// The middle in the size's shape, a little wider so that rounding
+		// leaves no gap, scaled to the height, then cut to the width. A
+		// source narrower than that shape keeps all its width.
+		return strings.Join(append(f, square,
+			fmt.Sprintf(`crop=min(iw\,ceil(ih*%d/%d/2)*2+2):ih`, w, h),
+			fmt.Sprintf("scale=-2:%d", h),
+			fmt.Sprintf(`crop=min(iw\,%d):%d,setsar=1`, w, h),
+			"format=yuv420p"), ",")
+	case config.FitFill:
+		return strings.Join(append(f, square,
+			fmt.Sprintf(`crop=min(iw\,ih*%[1]d/%[2]d):min(ih\,iw*%[2]d/%[1]d)`, w, h),
+			fmt.Sprintf("scale=%d:%d,setsar=1", w, h),
+			"format=yuv420p"), ",")
+	}
 	if a, b, ok := t.CropShape(); ok {
 		f = append(f, fmt.Sprintf(`crop=min(iw\,ih*%[1]d/%[2]d):min(ih\,iw*%[2]d/%[1]d)`, a, b))
 	}
@@ -163,7 +185,9 @@ func (s *Server) transcode(w http.ResponseWriter, r *http.Request, t config.Tran
 		if live {
 			stall = stallLimit
 		}
-		sent, msg, err := s.runFFmpeg(w, r, args, live, stall, what)
+		sent, msg, err := s.runFFmpeg(w, r, args, live, stall, what, func(vw, vh int, fps float64) {
+			w.Header().Set("X-Transcode", describeSent(t, vw, vh, fps))
+		})
 		s.cfg.Logf("transcode: %s to %s ended after %s: %v %s", what, ip, time.Since(started).Round(time.Second), err, msg)
 		// The DVR's small stream sometimes fails to start, and ffmpeg is
 		// stopped after startLimit. The client has had nothing yet, so it is
@@ -200,6 +224,9 @@ func parseNPT(h string) (float64, bool) {
 	}
 	return sec, true
 }
+
+// formatLimit is the most output held while looking for the picture's format.
+const formatLimit = 512 << 10
 
 // startLimit is how long ffmpeg may take to give its first bytes. The DVR's
 // small stream takes 6 to 15 s to start; when it fails, ffmpeg waits on.
@@ -247,7 +274,9 @@ func ConnContext(ctx context.Context, c net.Conn) context.Context {
 // channel the output goes through a queue that is cut when it holds more than
 // liveBacklog, so ffmpeg, and the DVR behind it, never wait for the client.
 // Otherwise ffmpeg waits for the client, unless a write blocks for stall.
-func (s *Server) runFFmpeg(w http.ResponseWriter, r *http.Request, args []string, live bool, stall time.Duration, what string) (int64, string, error) {
+// The start of the output is held until it shows the picture's size and rate,
+// which go to format before anything is sent.
+func (s *Server) runFFmpeg(w http.ResponseWriter, r *http.Request, args []string, live bool, stall time.Duration, what string, format func(w, h int, fps float64)) (int64, string, error) {
 	cmd := exec.CommandContext(r.Context(), s.cfg.FFmpeg, args...)
 	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 	cmd.WaitDelay = 3 * time.Second
@@ -286,12 +315,27 @@ func (s *Server) runFFmpeg(w http.ResponseWriter, r *http.Request, args []string
 	rc := http.NewResponseController(w)
 	buf := make([]byte, 64<<10)
 	var sent int64
+	var head []byte // the output until its format is known
 	for {
 		n, rerr := src.Read(buf)
+		chunk := buf[:n]
 		if n > 0 {
 			started.Store(true)
+		}
+		if format != nil && (n > 0 || len(head) > 0) {
+			head = append(head, chunk...)
+			vw, vh, fps, ok := cut.VideoFormat(head)
+			if !ok && len(head) < formatLimit && rerr == nil {
+				continue
+			}
+			if ok {
+				format(vw, vh, fps)
+			}
+			format, chunk, n = nil, head, len(head)
+		}
+		if n > 0 {
 			rc.SetWriteDeadline(time.Now().Add(stall))
-			if _, werr := w.Write(buf[:n]); werr != nil {
+			if _, werr := w.Write(chunk); werr != nil {
 				break
 			}
 			if rc.Flush() != nil {

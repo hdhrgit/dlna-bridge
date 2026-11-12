@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -14,9 +15,13 @@ import (
 // picture and sound, as ?w=320&h=180&fit=scale&fps=24&vb=400&ab=64.
 var overrideParams = []string{"w", "h", "fit", "fps", "vb", "ab"}
 
+// fits are the values fit takes.
+var fits = []string{"scale", "crop43", config.FitWidth, config.FitHeight, config.FitFill}
+
 // withOverrides is t with what q asks for, each value held within l: the
 // size (rounded down to even), fit (scale: stretched to the size; crop43: the
-// middle 4:3 of the picture, then stretched), the most frames a second, and
+// middle 4:3 of the picture, then stretched; width, height or fill: see
+// config.Fit), the most frames a second, and
 // the video and audio kbit/s. A value that is not a number, or not a fit, is
 // left out. Codec, H.264 profile, slices and the rest stay the profile's.
 func withOverrides(t config.Transcode, q url.Values, l config.Limits) config.Transcode {
@@ -42,27 +47,50 @@ func withOverrides(t config.Transcode, q url.Values, l config.Limits) config.Tra
 	num("ab", 8, l.AudioKbps, &t.AudioKbps)
 	switch q.Get("fit") {
 	case "scale":
-		t.ExactSize, t.Crop = true, ""
+		t.ExactSize, t.Crop, t.Fit = true, "", ""
 	case "crop43":
-		t.ExactSize, t.Crop = true, "4:3"
+		t.ExactSize, t.Crop, t.Fit = true, "4:3", ""
+	case config.FitWidth, config.FitHeight, config.FitFill:
+		t.ExactSize, t.Crop, t.Fit = false, "", q.Get("fit")
 	}
 	return t
 }
 
 // describeTranscode says what a conversion makes, for the X-Transcode header:
-// "320x180 fit=scale fps=24 vb=400 ab=64". For fit=inside, a profile that
-// fits the picture inside its size rather than stretching it, the size is that
-// box: the picture's own shape, which ffmpeg learns only once it reads the
-// stream, decides how much of it is used.
+// "320x180 fit=scale fps=24 vb=400 ab=64". For fit=inside (a profile that
+// fits the picture inside its size), width, height and fill, the size and
+// rate are the most: the picture's own shape and rate, which ffmpeg learns
+// only once it reads the stream, decide what is sent. describeSent then says.
 func describeTranscode(t config.Transcode) string {
-	w, h, fit := t.MaxWidth, t.MaxHeight, "inside"
+	w, h := t.MaxWidth, t.MaxHeight
 	if t.ExactSize {
-		w, h, fit = evenCeil(w), evenCeil(h), "scale"
+		w, h = evenCeil(w), evenCeil(h)
+	}
+	return describe(t, w, h, strconv.Itoa(t.FPS))
+}
+
+// describeSent is the same with the size and frame rate read from the stream
+// that ffmpeg makes; fps 0 keeps the most.
+func describeSent(t config.Transcode, w, h int, fps float64) string {
+	rate := strconv.Itoa(t.FPS)
+	if fps > 0 {
+		rate = strconv.FormatFloat(math.Round(fps*1000)/1000, 'f', -1, 64)
+	}
+	return describe(t, w, h, rate)
+}
+
+func describe(t config.Transcode, w, h int, fps string) string {
+	fit := "inside"
+	if t.ExactSize {
+		fit = "scale"
 	}
 	if a, b, ok := t.CropShape(); ok {
 		fit = fmt.Sprintf("crop%d%d", a, b)
 	}
-	return fmt.Sprintf("%dx%d fit=%s fps=%d vb=%d ab=%d", w, h, fit, t.FPS, t.VideoKbps, t.AudioKbps)
+	if t.Fit != "" {
+		fit = t.Fit
+	}
+	return fmt.Sprintf("%dx%d fit=%s fps=%s vb=%d ab=%d", w, h, fit, fps, t.VideoKbps, t.AudioKbps)
 }
 
 type capsMax struct {
@@ -79,7 +107,8 @@ func (s *Server) apiCaps(w http.ResponseWriter, r *http.Request) {
 	l := s.cfg.Settings.Limits()
 	writeJSON(w, http.StatusOK, struct {
 		Overrides []string `json:"overrides"`
+		Fits      []string `json:"fits"`
 		Max       capsMax  `json:"max"`
 		Profiles  []string `json:"profiles"`
-	}{overrideParams, capsMax{l.MaxWidth, l.MaxHeight, l.FPS, l.VideoKbps, l.AudioKbps}, config.BuiltinNames()})
+	}{overrideParams, fits, capsMax{l.MaxWidth, l.MaxHeight, l.FPS, l.VideoKbps, l.AudioKbps}, config.BuiltinNames()})
 }

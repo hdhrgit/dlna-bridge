@@ -104,7 +104,17 @@ type Transcode struct {
 	// NoDeblock leaves out H.264's deblocking filter, which a slow software
 	// decoder then skips: less work a frame, a slightly blockier picture.
 	NoDeblock bool `json:"no_deblock,omitempty"`
+	// Fit, set only by a stream request, fits the picture to MaxWidth x
+	// MaxHeight in its own way: FitWidth, FitHeight or FitFill. It takes the
+	// place of ExactSize and Crop.
+	Fit string `json:"-"`
 }
+
+const (
+	FitWidth  = "width"  // the whole picture, as wide as the size allows
+	FitHeight = "height" // as tall as the size, the sides cut evenly
+	FitFill   = "fill"   // the whole size covered, what is over cut evenly
+)
 
 // CropShape reads Crop as width and height parts, false when it is empty or
 // not a shape.
