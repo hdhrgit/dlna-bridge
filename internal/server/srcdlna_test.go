@@ -6,8 +6,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -235,5 +237,62 @@ func TestSourceConvertedHasNoSize(t *testing.T) {
 		if strings.Contains(br.Result, " "+a+"=") {
 			t.Errorf("%s of a converted stream: %s", a, br.Result)
 		}
+	}
+}
+
+// A tuner's channel is read once for all its clients through the bridge, as
+// a playlist's is: each read of it would take a tuner of its own.
+func TestSourceChannelSharesOneRead(t *testing.T) {
+	ts, err := os.ReadFile("testdata/tall.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reads atomic.Int32
+	var ms *httptest.Server
+	ms = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/desc.xml":
+			io.WriteString(w, `<root><device><UDN>uuid:tuner-1</UDN><friendlyName>Tuner</friendlyName><serviceList>
+				<service><serviceType>urn:schemas-upnp-org:service:ContentDirectory:1</serviceType><controlURL>/ctl/cd</controlURL></service>
+				</serviceList></device></root>`)
+		case "/auto/v2.1":
+			reads.Add(1)
+			w.Header().Set("Content-Type", videoMIME)
+			w.Write(ts)
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+		case "/ctl/cd":
+			a, _ := readAction(r.Body)
+			var list string
+			if a.Args["ObjectID"] == "Channels/v2.1" {
+				list = `<item id="Channels/v2.1" parentID="Channels" restricted="1"><dc:title>2.1 News</dc:title><upnp:class>object.item.videoItem.videoBroadcast</upnp:class>` +
+					`<res protocolInfo="http-get:*:video/mpeg:DLNA.ORG_PN=MPEG_TS_SD_NA_ISO">` + ms.URL + `/auto/v2.1</res></item>`
+			}
+			io.WriteString(w, `<s:Envelope><s:Body><u:BrowseResponse><Result>`+escape(didlOpen+list+"</DIDL-Lite>")+`</Result><NumberReturned>1</NumberReturned><TotalMatches>1</TotalMatches></u:BrowseResponse></s:Body></s:Envelope>`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(ms.Close)
+	s := newSourceServer(t, ms, config.Config{Default: config.Profile{Mode: config.ModeProxy}})
+	read := func() io.ReadCloser {
+		resp, err := http.Get(s.URL + "/stream/src/Channels%2Fv2.1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != videoMIME {
+			t.Fatalf("stream: %s %v", resp.Status, resp.Header)
+		}
+		b := make([]byte, 3*tsPacket)
+		if _, err := io.ReadFull(resp.Body, b); err != nil || b[0] != 0x47 {
+			t.Fatalf("stream: %v %x", err, b[:4])
+		}
+		return resp.Body
+	}
+	a, b := read(), read()
+	a.Close()
+	b.Close()
+	if n := reads.Load(); n != 1 {
+		t.Errorf("%d reads of the channel, want 1", n)
 	}
 }

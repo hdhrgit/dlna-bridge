@@ -295,6 +295,14 @@ type srcItem struct {
 	at                                time.Time
 }
 
+// live says whether the item is a broadcast channel sent as an MPEG-TS (a
+// tuner's), which every client shares one read of, as a playlist's channel: a
+// second read would take a second tuner.
+func (it srcItem) live() bool {
+	return strings.HasPrefix(it.class, "object.item.videoItem.videoBroadcast") && it.duration == 0 &&
+		(it.mime == videoMIME || it.mime == tsMIME)
+}
+
 // srcItems keeps the items asked for lately, for srcItemAge: a TV opens a
 // stream many times over.
 type srcItems struct {
@@ -349,7 +357,8 @@ func (s *Server) sourceItem(ctx context.Context, id string) (srcItem, error) {
 }
 
 // streamSource plays an item of the source to a client: passed through, or
-// converted, video as the profile's Transcode and sound as its Audio says.
+// converted, video as the profile's Transcode and sound as its Audio says. A
+// broadcast channel is read once for all its clients.
 func (s *Server) streamSource(w http.ResponseWriter, r *http.Request) {
 	if _, _, err := s.cfg.DLNA.Status(); err != nil {
 		// Down: an item known from before would wait on it, as a TV gives up.
@@ -367,8 +376,13 @@ func (s *Server) streamSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name, prof := s.profileFor(r)
+	live := it.live()
 	if prof.Mode == config.ModeTranscode {
 		switch {
+		case live:
+			feed := feedReq{url: it.url}
+			s.transcode(w, r, prof.Transcode, name, it.title, "", &feed, true, 0)
+			return
 		case strings.HasPrefix(it.class, "object.item.videoItem"):
 			s.transcode(w, r, prof.Transcode, name, it.title, it.url, nil, false, it.duration)
 			return
@@ -379,6 +393,10 @@ func (s *Server) streamSource(w http.ResponseWriter, r *http.Request) {
 	}
 	tw, done := s.tracked(w, r, "file", name, it.title, "")
 	defer done()
+	if live {
+		s.relay(tw, r, feedReq{url: it.url}, it.title)
+		return
+	}
 	s.proxy(tw, r, it.url, it.mime, it.features)
 }
 

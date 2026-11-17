@@ -112,7 +112,8 @@ Search go on to it (5 seconds; Search only if it searches). A client set to vide
 one set to sound its sound: the whole folder (up to 2000) is fetched for them and paged here. Direct clients
 play its own addresses; through the bridge, `/stream/src/<object id>` passes the stream through with byte
 ranges; converted, video is converted as the client's profile says and sound into its audio format, with no
-seeking. While it does not answer, the root is empty and streams give 502; when it answers again, the TVs
+seeking. A live channel (a tuner's, `videoBroadcast` as an MPEG-TS) is read once for all its clients, as a
+playlist's. While it does not answer, the root is empty and streams give 502; when it answers again, the TVs
 are told to browse again.
 
 ## Behind a reverse proxy

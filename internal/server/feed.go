@@ -91,7 +91,7 @@ func (s *Server) startFeed(key string, req feedReq, what string) *feed {
 	f := &feed{share: cut.NewShare(), stop: cancel}
 	from := "the DVR"
 	if req.url != "" {
-		from = "the playlist"
+		from = "the source"
 	}
 	s.cfg.Logf("feed: %s from %s", what, from)
 	go func() {
