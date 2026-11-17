@@ -48,14 +48,16 @@ func (v view) hidesClass(o object) bool {
 }
 
 // sourceList asks the source for a list, a folder's children or a search, and
-// makes its entries the client's. For a client that sees only some classes
-// the whole list (up to maxSourceItems) is fetched and paged here, so that the
-// count stays right; it may take several asks, as a source sends a page at
-// most (an HDHomeRun 100). Otherwise start and count go to the source.
-func (s *Server) sourceList(ctx context.Context, v view, action string, args [][2]string, start, count int) ([]object, int, error) {
-	if !v.filters() {
+// makes its entries the client's, or with sound, the Audio folder's. For a
+// client that sees only some classes, and in the Audio folder, the whole list
+// (up to maxSourceItems) is fetched and paged here, so that the count stays
+// right; it may take several asks, as a source sends a page at most (an
+// HDHomeRun 100). Otherwise start and count go to the source.
+func (s *Server) sourceList(ctx context.Context, v view, action string, args [][2]string, start, count int, sound bool) ([]object, int, error) {
+	whole := sound || v.filters()
+	if !whole {
 		entries, total, err := s.sourcePage(ctx, action, args, start, count)
-		return s.sourceObjects(v, entries), total, err
+		return s.sourceObjects(v, entries, false), total, err
 	}
 	var entries []didlEntry
 	for len(entries) < maxSourceItems {
@@ -68,7 +70,7 @@ func (s *Server) sourceList(ctx context.Context, v view, action string, args [][
 			break
 		}
 	}
-	objs := s.sourceObjects(v, entries)
+	objs := s.sourceObjects(v, entries, sound)
 	total := len(objs)
 	objs = objs[min(start, len(objs)):]
 	if count > 0 && count < len(objs) {
@@ -94,21 +96,42 @@ func (s *Server) sourcePage(ctx context.Context, action string, args [][2]string
 	return entries, total, nil
 }
 
-// sourceObjects are the entries the client sees, as its own.
-func (s *Server) sourceObjects(v view, entries []didlEntry) []object {
+// sourceObjects are the entries the client sees, as its own or, with sound,
+// as the Audio folder's.
+func (s *Server) sourceObjects(v view, entries []didlEntry, sound bool) []object {
 	var objs []object
 	for _, e := range entries {
-		if o, ok := s.sourceObject(v, e); ok && !v.hidesClass(o) {
+		o, ok := s.sourceObject(v, e)
+		if ok && sound {
+			o, ok = s.asSound(v, o)
+		} else if ok {
+			ok = !v.hidesClass(o)
+		}
+		if ok {
 			objs = append(objs, o)
 		}
 	}
 	return objs
 }
 
-// sourceChildren is a folder of the source, or for its root while it does not
-// answer, nothing.
+// sourceChildren is a folder of the source, or of its Audio folder, or for its
+// root while it does not answer, nothing. The root has the Audio folder last;
+// for a client set to sound, alone.
 func (s *Server) sourceChildren(ctx context.Context, v view, id string, start, count int) ([]object, int, error) {
-	objs, total, err := s.sourceList(ctx, v, "Browse", [][2]string{{"ObjectID", id}, {"BrowseFlag", "BrowseDirectChildren"}}, start, count)
+	if rid, ok := remoteID(id); ok {
+		return s.soundChildren(ctx, v, rid, start, count)
+	}
+	if id == idRoot && v.prof.Kind == config.KindSound {
+		if _, _, err := s.cfg.DLNA.Status(); err != nil {
+			return nil, 0, nil
+		}
+		root, err := s.sourceLookup(ctx, v, idRoot)
+		if err != nil || start > 0 {
+			return nil, 1, err
+		}
+		return []object{s.audioFolder(v, root.Children)}, 1, nil
+	}
+	objs, total, err := s.sourceList(ctx, v, "Browse", [][2]string{{"ObjectID", id}, {"BrowseFlag", "BrowseDirectChildren"}}, start, count, false)
 	if err != nil && id == idRoot && !isFault(err) {
 		return nil, 0, nil
 	}
@@ -117,13 +140,31 @@ func (s *Server) sourceChildren(ctx context.Context, v view, id string, start, c
 		for i := range objs {
 			objs[i].Parent = idRoot
 		}
+		if err == nil && v.showsSound() {
+			if start+len(objs) >= total && (count == 0 || len(objs) < count) {
+				objs = append(objs, s.audioFolder(v, total))
+			}
+			total++
+		}
 	}
 	return objs, total, err
 }
 
-// sourceLookup is one object of the source. Its root has the bridge's name.
+// sourceLookup is one object of the source, or of its Audio folder. Its root
+// has the bridge's name.
 func (s *Server) sourceLookup(ctx context.Context, v view, id string) (object, error) {
-	objs, _, err := s.sourceList(ctx, v, "Browse", [][2]string{{"ObjectID", id}, {"BrowseFlag", "BrowseMetadata"}}, 0, 0)
+	rid, sound := remoteID(id)
+	if sound {
+		if !v.showsSound() {
+			return object{}, errNoSuchObject
+		}
+		if rid == idRoot {
+			root, err := s.sourceLookup(ctx, v, idRoot)
+			return s.audioFolder(v, root.Children), err
+		}
+		id = rid
+	}
+	objs, _, err := s.sourceList(ctx, v, "Browse", [][2]string{{"ObjectID", id}, {"BrowseFlag", "BrowseMetadata"}}, 0, 0, sound)
 	if id == idRoot {
 		if err != nil && !isFault(err) {
 			objs, err = nil, nil
@@ -156,7 +197,7 @@ func (s *Server) sourceSearch(ctx context.Context, v view, args map[string]strin
 	if err1 != nil || err2 != nil || start < 0 || count < 0 {
 		return nil, errInvalidArgs
 	}
-	objs, total, err := s.sourceList(ctx, v, "Search", [][2]string{{"ContainerID", args["ContainerID"]}, {"SearchCriteria", args["SearchCriteria"]}}, start, count)
+	objs, total, err := s.sourceList(ctx, v, "Search", [][2]string{{"ContainerID", args["ContainerID"]}, {"SearchCriteria", args["SearchCriteria"]}}, start, count, false)
 	if err != nil {
 		return nil, err
 	}
@@ -378,23 +419,32 @@ func (s *Server) sourceItem(ctx context.Context, id string) (srcItem, error) {
 	return srcItem{}, errNoSuchObject
 }
 
+// streamItem is the item of the source a stream asks for, or false when the
+// client has been answered.
+func (s *Server) streamItem(w http.ResponseWriter, r *http.Request) (srcItem, bool) {
+	if _, _, err := s.cfg.DLNA.Status(); err != nil {
+		// Down: an item known from before would wait on it, as a TV gives up.
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return srcItem{}, false
+	}
+	it, err := s.sourceItem(r.Context(), r.PathValue("id"))
+	if isFault(err) {
+		http.NotFound(w, r)
+		return srcItem{}, false
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return srcItem{}, false
+	}
+	return it, true
+}
+
 // streamSource plays an item of the source to a client: passed through, or
 // converted, video as the profile's Transcode and sound as its Audio says. A
 // broadcast channel is read once for all its clients.
 func (s *Server) streamSource(w http.ResponseWriter, r *http.Request) {
-	if _, _, err := s.cfg.DLNA.Status(); err != nil {
-		// Down: an item known from before would wait on it, as a TV gives up.
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
-	}
-	id := r.PathValue("id")
-	it, err := s.sourceItem(r.Context(), id)
-	if isFault(err) {
-		http.NotFound(w, r)
-		return
-	}
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
+	it, ok := s.streamItem(w, r)
+	if !ok {
 		return
 	}
 	name, prof := s.profileFor(r)

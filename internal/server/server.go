@@ -181,6 +181,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /stream/rec/{id}", needs(dvrOnly, s.streamRecording))
 	mux.HandleFunc("GET /stream/adfree/{id}", needs(dvrOnly, s.streamAdFree))
 	mux.HandleFunc("GET /stream/src/{id}", needs(func() bool { return s.cfg.DLNA != nil }, s.streamSource))
+	mux.HandleFunc("GET /stream/srcaudio/{id}", needs(func() bool { return s.cfg.DLNA != nil }, s.streamSourceSound))
 	return logRequests(s.cfg.Logf, s.cfg.Version, s.who, mux)
 }
 

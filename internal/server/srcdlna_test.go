@@ -3,10 +3,12 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"html"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -73,6 +75,9 @@ func fakeMediaServer(t *testing.T) (*httptest.Server, *[]string) {
 			}
 		case a.Args["ObjectID"] == "0":
 			list, total = []string{`<container id="f1" parentID="2" childCount="4"><dc:title>Media</dc:title></container>`}, 1
+			if a.Args["StartingIndex"] != "0" {
+				list = nil
+			}
 		case a.Args["ObjectID"] == "f1":
 			start, _ := strconv.Atoi(a.Args["StartingIndex"])
 			n, _ := strconv.Atoi(a.Args["RequestedCount"])
@@ -93,6 +98,10 @@ func fakeMediaServer(t *testing.T) (*httptest.Server, *[]string) {
 }
 
 func newSourceServer(t *testing.T, ms *httptest.Server, start config.Config) *httptest.Server {
+	return newSourceServerFF(t, ms, start, "")
+}
+
+func newSourceServerFF(t *testing.T, ms *httptest.Server, start config.Config, ffmpeg string) *httptest.Server {
 	settings, err := config.Open("", start)
 	if err != nil {
 		t.Fatal(err)
@@ -100,7 +109,7 @@ func newSourceServer(t *testing.T, ms *httptest.Server, start config.Config) *ht
 	d := source.NewServer(ms.URL+"/desc.xml", "test", nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	srv := New(Config{Name: "Channels DVR", NameFromSource: true, UUID: "u-1", Version: "t", Settings: settings, DLNA: d, Source: ms.URL + "/desc.xml", SourceType: source.DLNA})
+	srv := New(Config{Name: "Channels DVR", NameFromSource: true, UUID: "u-1", Version: "t", Settings: settings, DLNA: d, Source: ms.URL + "/desc.xml", SourceType: source.DLNA, FFmpeg: ffmpeg, Logf: func(string, ...any) {}})
 	go srv.WatchSource(ctx)
 	for i := 0; i < 100 && d.Name() == ""; i++ {
 		time.Sleep(10 * time.Millisecond)
@@ -118,7 +127,7 @@ func TestSourceBrowse(t *testing.T) {
 		t.Errorf("root: %+v", root.Containers)
 	}
 	_, top := browse(t, s.URL, "0", "BrowseDirectChildren", 0, 0)
-	if len(top.Containers) != 1 || top.Containers[0].ID != "f1" || top.Containers[0].ChildCount != 4 || top.Containers[0].Parent != "0" {
+	if len(top.Containers) != 2 || top.Containers[0].ID != "f1" || top.Containers[0].ChildCount != 4 || top.Containers[0].Parent != "0" || top.Containers[1].ID != "listen" {
 		t.Fatalf("top: %+v", top.Containers)
 	}
 	// Paging goes to the source for a client that sees everything.
@@ -172,7 +181,7 @@ func TestSourceBrowse(t *testing.T) {
 }
 
 func TestSourceDirectAndKinds(t *testing.T) {
-	ms, asked := fakeMediaServer(t)
+	ms, _ := fakeMediaServer(t)
 	s := newSourceServer(t, ms, config.Config{
 		Default: config.Profile{Mode: config.ModeDirect},
 		Clients: []config.Client{{Name: "speaker", UserAgents: []string{"Speaker"}, Profile: config.Profile{Mode: config.ModeDirect, Kind: config.KindSound}}},
@@ -181,9 +190,7 @@ func TestSourceDirectAndKinds(t *testing.T) {
 	if len(f.Items) != 3 || f.Items[0].Res.URL != ms.URL+"/media/v.mkv" || f.Items[0].Res.Size != "1000" {
 		t.Errorf("direct: %+v", f.Items)
 	}
-	// A client set to sound sees the song alone, counted right: the whole
-	// folder is fetched, page by page.
-	*asked = nil
+	// A client set to sound sees the song alone, counted right.
 	body := `<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:Browse xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1"><ObjectID>f1</ObjectID><BrowseFlag>BrowseDirectChildren</BrowseFlag><StartingIndex>0</StartingIndex><RequestedCount>1</RequestedCount></u:Browse></s:Body></s:Envelope>`
 	req, _ := http.NewRequest("POST", s.URL+"/ctl/ContentDirectory", strings.NewReader(body))
 	req.Header.Set("User-Agent", "Speaker/1.0")
@@ -195,9 +202,6 @@ func TestSourceDirectAndKinds(t *testing.T) {
 	resp.Body.Close()
 	if !strings.Contains(string(out), "<TotalMatches>1</TotalMatches>") || !strings.Contains(string(out), "Song") || strings.Contains(string(out), "Holiday") {
 		t.Errorf("sound only: %s", out)
-	}
-	if strings.Join(*asked, ",") != "Browse f1 0/2000,Browse f1 3/1997" {
-		t.Errorf("the whole folder should be fetched, page by page: %v", *asked)
 	}
 }
 
@@ -248,9 +252,8 @@ func TestSourceConvertedHasNoSize(t *testing.T) {
 	}
 }
 
-// A tuner's channel is read once for all its clients through the bridge, as
-// a playlist's is: each read of it would take a tuner of its own.
-func TestSourceChannelSharesOneRead(t *testing.T) {
+// fakeTuner is a DLNA media server with one live channel, as an HDHomeRun's.
+func fakeTuner(t *testing.T) (*httptest.Server, *atomic.Int32) {
 	ts, err := os.ReadFile("testdata/tall.ts")
 	if err != nil {
 		t.Fatal(err)
@@ -282,6 +285,13 @@ func TestSourceChannelSharesOneRead(t *testing.T) {
 		}
 	}))
 	t.Cleanup(ms.Close)
+	return ms, &reads
+}
+
+// A tuner's channel is read once for all its clients through the bridge, as
+// a playlist's is: each read of it would take a tuner of its own.
+func TestSourceChannelSharesOneRead(t *testing.T) {
+	ms, reads := fakeTuner(t)
 	s := newSourceServer(t, ms, config.Config{Default: config.Profile{Mode: config.ModeProxy}})
 	read := func() io.ReadCloser {
 		resp, err := http.Get(s.URL + "/stream/src/Channels%2Fv2.1")
@@ -302,5 +312,107 @@ func TestSourceChannelSharesOneRead(t *testing.T) {
 	b.Close()
 	if n := reads.Load(); n != 1 {
 		t.Errorf("%d reads of the channel, want 1", n)
+	}
+}
+
+// The Audio folder is the source's tree again with each video as its sound:
+// beside the source's folders for a client that sees both, alone for one set
+// to sound, and not there for one set to video.
+func TestSourceAudioFolder(t *testing.T) {
+	ms, asked := fakeMediaServer(t)
+	s := newSourceServer(t, ms, config.Config{
+		Default: config.Profile{Mode: config.ModeProxy, Audio: config.Audio{Format: config.AudioAAC, Kbps: 128, Channels: 2}},
+		Clients: []config.Client{
+			{Name: "tv", Profile: config.Profile{Mode: config.ModeProxy, Kind: config.KindVideo}},
+			{Name: "speaker", Profile: config.Profile{Mode: config.ModeProxy, Kind: config.KindSound, Audio: config.Audio{Format: config.AudioMP3, Kbps: 128, Channels: 2}}},
+		},
+	})
+	br, root := browse(t, s.URL, "0", "BrowseDirectChildren", 0, 0)
+	if br.TotalMatches != 2 || len(root.Containers) != 2 || root.Containers[0].ID != "f1" || root.Containers[1].ID != "listen" ||
+		root.Containers[1].Title != "Audio" || root.Containers[1].ChildCount != 1 {
+		t.Fatalf("root: %d %+v", br.TotalMatches, root.Containers)
+	}
+	if br, page := browse(t, s.URL, "0", "BrowseDirectChildren", 1, 1); br.TotalMatches != 2 || len(page.Containers) != 1 || page.Containers[0].ID != "listen" {
+		t.Errorf("root's second page: %d %+v", br.TotalMatches, page.Containers)
+	}
+	if _, top := browse(t, s.URL, "listen", "BrowseDirectChildren", 0, 0); len(top.Containers) != 1 || top.Containers[0].ID != "listen/f1" || top.Containers[0].Parent != "listen" {
+		t.Errorf("Audio: %+v", top.Containers)
+	}
+	*asked = nil
+	fr, f := browse(t, s.URL, "listen/f1", "BrowseDirectChildren", 0, 0)
+	if fr.TotalMatches != 2 || len(f.Items) != 2 {
+		t.Fatalf("the photo should be left out: %d %+v", fr.TotalMatches, f.Items)
+	}
+	if strings.Join(*asked, ",") != "Browse f1 0/2000,Browse f1 3/1997" {
+		t.Errorf("the whole folder should be fetched, page by page: %v", *asked)
+	}
+	if v := f.Items[0]; v.ID != "listen/v1" || v.Class != "object.item.audioItem" || !strings.HasSuffix(v.Res.URL, "/stream/srcaudio/v1") ||
+		!strings.Contains(v.Res.Protocol, "audio/vnd.dlna.adts") || v.Res.Duration != "0:01:30.500" || v.Res.Size != "" {
+		t.Errorf("a video as its sound: %+v", v)
+	}
+	if a := f.Items[1]; a.ID != "listen/a1" || a.Class != "object.item.audioItem.musicTrack" || !strings.HasSuffix(a.Res.URL, "/stream/src/a1") {
+		t.Errorf("a song as it is: %+v", a)
+	}
+	if _, m := browse(t, s.URL, "listen/v1", "BrowseMetadata", 0, 0); len(m.Items) != 1 || m.Items[0].ID != "listen/v1" {
+		t.Errorf("a sound's own object: %+v", m.Items)
+	}
+	browseAs := func(profile, id string) (int, string) {
+		body := `<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:Browse xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1"><ObjectID>` + id +
+			`</ObjectID><BrowseFlag>BrowseDirectChildren</BrowseFlag><StartingIndex>0</StartingIndex><RequestedCount>0</RequestedCount></u:Browse></s:Body></s:Envelope>`
+		req, _ := http.NewRequest("POST", s.URL+"/ctl/ContentDirectory?profile="+profile, strings.NewReader(body))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		out, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, html.UnescapeString(string(out))
+	}
+	if _, out := browseAs("tv", "0"); !strings.Contains(out, `id="f1"`) || strings.Contains(out, `id="listen"`) {
+		t.Errorf("a client set to video sees no Audio folder: %s", out)
+	}
+	if code, _ := browseAs("tv", "listen/f1"); code != 500 {
+		t.Errorf("a client set to video in the Audio folder: %d", code)
+	}
+	if _, out := browseAs("speaker", "0"); !strings.Contains(out, `id="listen"`) || strings.Contains(out, `id="f1"`) || !strings.Contains(out, "<TotalMatches>1</TotalMatches>") {
+		t.Errorf("a client set to sound sees the Audio folder alone: %s", out)
+	}
+	if _, out := browseAs("speaker", "listen/f1"); !strings.Contains(out, "/stream/srcaudio/v1?profile=speaker") || !strings.Contains(out, "audio/mpeg") {
+		t.Errorf("a client set to sound gets its own format: %s", out)
+	}
+}
+
+// The sound of a live channel is read from the feed its clients share; of a
+// file, from the source.
+func TestSourceSoundStream(t *testing.T) {
+	dir := t.TempDir()
+	ff := filepath.Join(dir, "ffmpeg")
+	if err := os.WriteFile(ff, []byte("#!/bin/sh\necho \"$@\" >> "+dir+"/args\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	get := func(base, path string) (int, string) {
+		os.Remove(filepath.Join(dir, "args"))
+		resp, err := http.Get(base + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		args, _ := os.ReadFile(filepath.Join(dir, "args"))
+		return resp.StatusCode, string(args)
+	}
+	start := config.Config{Default: config.Profile{Mode: config.ModeProxy, Audio: config.Audio{Format: config.AudioAAC, Kbps: 96, Channels: 2}}}
+	tuner, reads := fakeTuner(t)
+	s := newSourceServerFF(t, tuner, start, ff)
+	if _, args := get(s.URL, "/stream/srcaudio/Channels%2Fv2.1"); !strings.Contains(args, "-i pipe:0 -map 0:a:0 -vn -c:a aac -f adts -b:a 96k") || reads.Load() != 1 {
+		t.Errorf("live: %d reads, %s", reads.Load(), args)
+	}
+	ms, _ := fakeMediaServer(t)
+	s = newSourceServerFF(t, ms, start, ff)
+	if _, args := get(s.URL, "/stream/srcaudio/v1"); !strings.Contains(args, "-i "+ms.URL+"/media/v.mkv -map 0:a:0 -vn -c:a aac") {
+		t.Errorf("file: %s", args)
+	}
+	if code, args := get(s.URL, "/stream/srcaudio/p1"); code != 404 || args != "" {
+		t.Errorf("a photo has no sound: %d %s", code, args)
 	}
 }

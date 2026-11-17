@@ -109,12 +109,14 @@ start and again when it stops answering (it may come back on another port). Its 
 must be on that address, and the bridge only fetches streams and pictures there. The TVs see its folders
 with its own object ids, and the bridge's name is its `friendlyName` unless `DLNA_NAME` is set. Browse and
 Search go on to it (5 seconds; Search only if it searches). A client set to video sees its video and pictures,
-one set to sound its sound: the whole folder (up to 2000) is fetched for them and paged here. Direct clients
-play its own addresses; through the bridge, `/stream/src/<object id>` passes the stream through with byte
-ranges; converted, video is converted as the client's profile says and sound into its audio format, with no
-seeking. A live channel (a tuner's, `videoBroadcast` as an MPEG-TS) is read once for all its clients, as a
-playlist's. While it does not answer, the root is empty and streams give 502; when it answers again, the TVs
-are told to browse again.
+one set to sound its sound: the whole folder (up to 2000) is fetched for them and paged here. Its root also
+has an **Audio** folder: its folders again, each video as its sound (`/stream/srcaudio/<object id>`) in the
+client's audio format, its songs as they are. A client set to sound sees only that; one set to video does not
+see it. Direct clients play its own addresses; through the bridge, `/stream/src/<object id>` passes the stream
+through with byte ranges; converted, video is converted as the client's profile says and sound into its audio
+format, with no seeking. A live channel (a tuner's, `videoBroadcast` as an MPEG-TS) is read once for all its
+clients, as a playlist's. While it does not answer, the root is empty and streams give 502; when it answers
+again, the TVs are told to browse again.
 
 ## Behind a reverse proxy
 
