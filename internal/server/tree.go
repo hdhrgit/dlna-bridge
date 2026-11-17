@@ -46,6 +46,13 @@ func (s *Server) browse(ctx context.Context, v view, args map[string]string) ([]
 		}
 		objs = []object{o}
 	case "BrowseDirectChildren":
+		if s.cfg.DLNA != nil {
+			var err error
+			if objs, total, err = s.sourceChildren(ctx, v, id, start, count); err != nil {
+				return nil, err
+			}
+			break
+		}
 		all, err := s.children(ctx, v, id)
 		if err != nil {
 			return nil, err
@@ -124,6 +131,10 @@ func (v view) hides(id string) bool {
 // children lists what is in a folder the client sees, leaving out what it
 // does not.
 func (s *Server) children(ctx context.Context, v view, id string) ([]object, error) {
+	if s.cfg.DLNA != nil {
+		objs, _, err := s.sourceChildren(ctx, v, id, 0, 0)
+		return objs, err
+	}
 	if v.hides(id) || !s.serves(id) {
 		return nil, errNoSuchObject
 	}
@@ -211,6 +222,9 @@ func (s *Server) allChildren(ctx context.Context, v view, id string) ([]object, 
 
 // lookup finds one object the client sees.
 func (s *Server) lookup(ctx context.Context, v view, id string) (object, error) {
+	if s.cfg.DLNA != nil {
+		return s.sourceLookup(ctx, v, id)
+	}
 	if v.hides(id) || !s.serves(id) {
 		return object{}, errNoSuchObject
 	}
@@ -237,7 +251,7 @@ func (s *Server) lookupAny(ctx context.Context, v view, id string) (object, erro
 		if err != nil {
 			return object{}, err
 		}
-		return object{ID: idRoot, Parent: "-1", Title: s.cfg.Name, Folder: true, Children: len(kids)}, nil
+		return object{ID: idRoot, Parent: "-1", Title: s.name(), Folder: true, Children: len(kids)}, nil
 	case id == idLive:
 		return folder("Live TV", func() ([]object, error) { return s.liveItems(ctx, v, idLive) })
 	case id == idFavorites:
@@ -716,17 +730,7 @@ type resource struct{ url, protocol string }
 // converted here. throughBridge forces the bridge, for streams only it can
 // make (recordings with their breaks cut).
 func (s *Server) resource(v view, direct, bridgePath string, q url.Values, throughBridge bool, protocol string) resource {
-	via := func() string {
-		q := cloneValues(q)
-		if v.name != "" {
-			q.Set("profile", v.name) // the stream request may look different from the browse
-		}
-		u := "http://" + v.host + bridgePath
-		if len(q) > 0 {
-			u += "?" + q.Encode()
-		}
-		return u
-	}
+	via := func() string { return s.bridgeURL(v, bridgePath, q) }
 	switch {
 	case v.prof.Mode == config.ModeTranscode:
 		if v.prof.Seek == config.SeekTime && protocol != liveProtocol {
@@ -737,6 +741,20 @@ func (s *Server) resource(v view, direct, bridgePath string, q url.Values, throu
 		return resource{via(), protocol}
 	}
 	return resource{direct, protocol}
+}
+
+// bridgeURL is the address of a stream through the bridge, as the client
+// reaches it.
+func (s *Server) bridgeURL(v view, path string, q url.Values) string {
+	q = cloneValues(q)
+	if v.name != "" {
+		q.Set("profile", v.name) // the stream request may look different from the browse
+	}
+	u := "http://" + v.host + path
+	if len(q) > 0 {
+		u += "?" + q.Encode()
+	}
+	return u
 }
 
 func cloneValues(q url.Values) url.Values {

@@ -64,9 +64,13 @@ type Config struct {
 	Discovery func() ssdp.Stats
 	// ConfigPath is where the settings are kept, for the page to say.
 	ConfigPath string
-	// Playlist, when set, is served in place of the DVR, which is then nil.
-	// With neither, the tree is empty: the source has not been found yet.
+	// Playlist or DLNA, when set, is served in place of the DVR, which is then
+	// nil. With none, the tree is empty: the source has not been found yet.
 	Playlist *source.Playlist
+	DLNA     *source.Server
+	// NameFromSource has the TVs list the DLNA server's own name in place of
+	// Name.
+	NameFromSource bool
 	// Source is the address given in place of the DVR, and SourceType what it
 	// was found to be (empty while not yet found); both empty for -dvr.
 	Source, SourceType string
@@ -99,6 +103,7 @@ type Server struct {
 	// the SystemUpdateID, which goes up when the recordings change.
 	art       artStore // the pictures handed out at the bridge's address
 	renderers renderer.Cache
+	srcItems  srcItems // a DLNA source's items being played
 
 	subsMu   sync.Mutex
 	subs     map[string]*subscription
@@ -175,6 +180,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /stream/audio/{number}", needs(hasChannels, s.streamAudio))
 	mux.HandleFunc("GET /stream/rec/{id}", needs(dvrOnly, s.streamRecording))
 	mux.HandleFunc("GET /stream/adfree/{id}", needs(dvrOnly, s.streamAdFree))
+	mux.HandleFunc("GET /stream/src/{id}", needs(func() bool { return s.cfg.DLNA != nil }, s.streamSource))
 	return logRequests(s.cfg.Logf, s.cfg.Version, s.who, mux)
 }
 
@@ -264,7 +270,7 @@ func serveXML(body string) http.HandlerFunc {
 
 func (s *Server) description(w http.ResponseWriter, r *http.Request) {
 	body := strings.NewReplacer(
-		"{{.Name}}", escape(s.cfg.Name),
+		"{{.Name}}", escape(s.name()),
 		"{{.Version}}", escape(s.cfg.Version),
 		"{{.UUID}}", escape(s.cfg.UUID),
 	).Replace(descriptionXML)
@@ -299,14 +305,22 @@ func (s *Server) contentDirectory(w http.ResponseWriter, r *http.Request) {
 		}
 		writeResponse(w, cdService, a.Name, out)
 	case "Search":
-		out, err := s.search(r.Context(), s.viewOf(r), a.Args)
+		search := s.search
+		if s.cfg.DLNA != nil {
+			search = s.sourceSearch
+		}
+		out, err := search(r.Context(), s.viewOf(r), a.Args)
 		if err != nil {
 			s.fault(w, a, err)
 			return
 		}
 		writeResponse(w, cdService, a.Name, out)
 	case "GetSearchCapabilities":
-		writeResponse(w, cdService, a.Name, [][2]string{{"SearchCaps", searchCaps}})
+		caps := searchCaps
+		if s.cfg.DLNA != nil {
+			caps = s.cfg.DLNA.SearchCaps() // its own: searches go on to it
+		}
+		writeResponse(w, cdService, a.Name, [][2]string{{"SearchCaps", caps}})
 	case "GetSortCapabilities":
 		writeResponse(w, cdService, a.Name, [][2]string{{"SortCaps", ""}})
 	case "GetSystemUpdateID":
@@ -336,6 +350,16 @@ func (s *Server) fault(w http.ResponseWriter, a action, err error) {
 
 // Samsung TVs ask for this before they show the server's folders.
 const featureList = `<?xml version="1.0" encoding="UTF-8"?><Features xmlns="urn:schemas-upnp-org:av:avs" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="urn:schemas-upnp-org:av:avs http://www.upnp.org/schemas/av/avs.xsd"><Feature name="samsung.com_BASICVIEW" version="1"><container id="` + idLive + `" type="object.item.videoItem"/><container id="` + idFavorites + `" type="object.item.videoItem"/><container id="` + idRecordings + `" type="object.item.videoItem"/></Feature></Features>`
+
+// name is what the TVs list.
+func (s *Server) name() string {
+	if s.cfg.DLNA != nil && s.cfg.NameFromSource {
+		if n := s.cfg.DLNA.Name(); n != "" {
+			return n
+		}
+	}
+	return s.cfg.Name
+}
 
 // The tree never changes shape, so the update id only says "the lists may be
 // new": it moves on once a minute.

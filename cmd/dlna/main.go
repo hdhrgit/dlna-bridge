@@ -61,9 +61,9 @@ func main() {
 		fatal(fmt.Errorf("-streams must be direct or proxy, not %q", *streams))
 	}
 	switch *srcType {
-	case source.Auto, source.Channels, source.M3U:
+	case source.Auto, source.Channels, source.DLNA, source.M3U:
 	default:
-		fatal(fmt.Errorf("-source-type must be auto, channels or m3u, not %q", *srcType))
+		fatal(fmt.Errorf("-source-type must be auto, channels, dlna or m3u, not %q", *srcType))
 	}
 	if *srcType == source.M3U && !source.IsURL(*src) {
 		fatal(fmt.Errorf("-source-type m3u needs an http(s) URL in -source, not %q", *src))
@@ -164,6 +164,18 @@ func main() {
 			srv := server.New(cfg)
 			go srv.WatchPlaylist(ctx)
 			handler.set(srv.Handler())
+		case source.DLNA:
+			cfg.DLNA = source.NewServer(where, agent, logs.Logf)
+			// Its own name, unless one was set.
+			cfg.NameFromSource = os.Getenv("DLNA_NAME") == ""
+			flag.Visit(func(f *flag.Flag) {
+				if f.Name == "name" {
+					cfg.NameFromSource = false
+				}
+			})
+			srv := server.New(cfg)
+			go srv.WatchSource(ctx)
+			handler.set(srv.Handler())
 		}
 		logs.Logf("source: not a Channels DVR, so DLNA_DVR (%s) is not used", *dvrURL)
 	}
@@ -172,8 +184,8 @@ func main() {
 		serve(source.Channels, *dvrURL)
 	case *srcType == source.Channels:
 		serve(source.Channels, source.DVRAddress(*src))
-	case *srcType == source.M3U:
-		serve(source.M3U, *src)
+	case *srcType == source.M3U, *srcType == source.DLNA:
+		serve(*srcType, *src)
 	default:
 		kind, where, err := source.Detect(ctx, *src, agent)
 		if err != nil && source.IsURL(*src) {

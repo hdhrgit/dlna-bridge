@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -64,7 +65,7 @@ type sourceState struct {
 
 func (s *Server) apiState(w http.ResponseWriter, r *http.Request) {
 	st := state{
-		Name: s.cfg.Name, Version: s.cfg.Version,
+		Name: s.name(), Version: s.cfg.Version,
 		Config: s.cfg.Settings.Get(), Builtin: config.Builtin(), ConfigPath: s.cfg.ConfigPath, Saved: s.cfg.Settings.Persistent(),
 		Clients: s.clients.list(), Streams: s.jobs.list(), Defaults: config.DefaultTranscode(),
 		UptimeSecs: int64(time.Since(s.started).Seconds()), Location: "http://" + s.hostOf(r) + "/description.xml",
@@ -115,6 +116,15 @@ func (s *Server) sourceState() *sourceState {
 		st.Text, st.Detail = "not found yet", "nothing answers there as a Channels DVR, DLNA server or M3U playlist; trying again every minute"
 	case s.cfg.SourceType == source.Channels:
 		st.OK, st.Text = true, "a Channels DVR"
+	case s.cfg.DLNA != nil:
+		ctl, _, err := s.cfg.DLNA.Status()
+		st.OK, st.Text, st.Detail = err == nil, "DLNA server", ctl
+		if n := s.cfg.DLNA.Name(); n != "" {
+			st.Text += " " + strconv.Quote(n)
+		}
+		if err != nil {
+			st.Detail = "not answering: " + err.Error() + "; looking for it every minute"
+		}
 	case s.cfg.Playlist != nil:
 		n, fetched, err := s.cfg.Playlist.Status()
 		st.OK, st.Text = err == nil && n > 0, fmt.Sprintf("M3U playlist, %d channels", n)

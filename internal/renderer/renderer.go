@@ -46,16 +46,41 @@ var client = &http.Client{Timeout: 15 * time.Second,
 
 // Discover asks the LAN for renderers and waits up to wait for answers.
 func Discover(ctx context.Context, wait time.Duration) ([]Renderer, error) {
+	locs, err := Search("urn:schemas-upnp-org:device:MediaRenderer:1", wait, Group)
+	if err != nil {
+		return nil, err
+	}
+	var out []Renderer
+	seen := map[string]bool{}
+	for loc, ip := range locs {
+		r, err := describe(ctx, loc, ip)
+		if err != nil || seen[r.ID] {
+			continue
+		}
+		seen[r.ID] = true
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+// Group is the SSDP multicast group.
+var Group = &net.UDPAddr{IP: net.IPv4(239, 255, 255, 250), Port: 1900}
+
+// Search sends an SSDP M-SEARCH for st to each of to, the multicast group or
+// one device, and waits up to wait for answers: their LOCATIONs, each with
+// the address that answered.
+func Search(st string, wait time.Duration, to ...*net.UDPAddr) (map[string]string, error) {
 	conn, err := net.ListenUDP("udp4", nil)
 	if err != nil {
 		return nil, err
 	}
 	defer conn.Close()
-	group := &net.UDPAddr{IP: net.IPv4(239, 255, 255, 250), Port: 1900}
-	msg := "M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 2\r\n" +
-		"ST: urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n"
 	for range 2 { // UDP gets lost
-		conn.WriteToUDP([]byte(msg), group)
+		for _, a := range to {
+			msg := "M-SEARCH * HTTP/1.1\r\nHOST: " + a.String() + "\r\nMAN: \"ssdp:discover\"\r\nMX: 2\r\n" +
+				"ST: " + st + "\r\n\r\n"
+			conn.WriteToUDP([]byte(msg), a)
+		}
 	}
 	conn.SetReadDeadline(time.Now().Add(wait))
 	locs := map[string]string{} // location: the address that answered
@@ -71,31 +96,41 @@ func Discover(ctx context.Context, wait time.Duration) ([]Renderer, error) {
 			}
 		}
 	}
-	var out []Renderer
-	seen := map[string]bool{}
-	for loc, ip := range locs {
-		r, err := describe(ctx, loc, ip)
-		if err != nil || seen[r.ID] {
-			continue
-		}
-		seen[r.ID] = true
-		out = append(out, r)
-	}
-	return out, nil
+	return locs, nil
 }
 
-// describe reads a device description. Its control URLs must be on the
-// address that answered: anything else would have the bridge send requests
-// wherever a device on the LAN likes.
-func describe(ctx context.Context, loc, ip string) (Renderer, error) {
+// Device is what a device's description says of it.
+type Device struct {
+	UDN, Name, Model string
+	// Services are the control URLs of its services, by service type.
+	Services map[string]string
+	// Icon is the address of its largest icon, if it has one.
+	Icon string
+}
+
+// Control is the control URL of its service of a type, of any version, as
+// "urn:schemas-upnp-org:service:AVTransport:".
+func (d Device) Control(prefix string) string {
+	for t, u := range d.Services {
+		if strings.HasPrefix(t, prefix) {
+			return u
+		}
+	}
+	return ""
+}
+
+// Describe reads a device description. It and the control URLs and icon in it
+// must be on ip, the address that answered: anything else would have the
+// bridge send requests wherever a device on the LAN likes.
+func Describe(ctx context.Context, loc, ip string) (Device, error) {
 	base, err := url.Parse(loc)
 	if err != nil || base.Hostname() != ip {
-		return Renderer{}, errors.New("description not on the device's address")
+		return Device{}, errors.New("description not on the device's address")
 	}
 	req, _ := http.NewRequestWithContext(ctx, "GET", loc, nil)
 	resp, err := client.Do(req)
 	if err != nil {
-		return Renderer{}, err
+		return Device{}, err
 	}
 	defer resp.Body.Close()
 	var d struct {
@@ -108,31 +143,52 @@ func describe(ctx context.Context, loc, ip string) (Renderer, error) {
 				Type    string `xml:"serviceType"`
 				Control string `xml:"controlURL"`
 			} `xml:"serviceList>service"`
+			Icons []struct {
+				Width int    `xml:"width"`
+				URL   string `xml:"url"`
+			} `xml:"iconList>icon"`
 		} `xml:"device"`
 	}
 	if err := xml.NewDecoder(io.LimitReader(resp.Body, 256<<10)).Decode(&d); err != nil {
-		return Renderer{}, err
+		return Device{}, err
 	}
 	if d.URLBase != "" {
 		if b, err := url.Parse(d.URLBase); err == nil {
 			base = b
 		}
 	}
-	r := Renderer{ID: d.Device.UDN, Name: d.Device.Name, Model: d.Device.Model, IP: ip}
-	for _, s := range d.Device.Services {
-		u, err := base.Parse(strings.TrimSpace(s.Control))
+	on := func(raw string) string {
+		u, err := base.Parse(strings.TrimSpace(raw))
 		if err != nil || u.Hostname() != ip || (u.Scheme != "http" && u.Scheme != "https") {
-			continue
+			return ""
 		}
-		switch {
-		case strings.HasPrefix(s.Type, "urn:schemas-upnp-org:service:AVTransport:"):
-			r.avt = u.String()
-		case strings.HasPrefix(s.Type, "urn:schemas-upnp-org:service:RenderingControl:"):
-			r.rc = u.String()
-		case strings.HasPrefix(s.Type, "urn:schemas-upnp-org:service:ConnectionManager:"):
-			r.cm = u.String()
+		return u.String()
+	}
+	dev := Device{UDN: d.Device.UDN, Name: d.Device.Name, Model: d.Device.Model, Services: map[string]string{}}
+	for _, s := range d.Device.Services {
+		if u := on(s.Control); u != "" {
+			dev.Services[strings.TrimSpace(s.Type)] = u
 		}
 	}
+	width := 0
+	for _, i := range d.Device.Icons {
+		if u := on(i.URL); u != "" && i.Width >= width {
+			dev.Icon, width = u, i.Width
+		}
+	}
+	return dev, nil
+}
+
+// describe reads a renderer's description.
+func describe(ctx context.Context, loc, ip string) (Renderer, error) {
+	d, err := Describe(ctx, loc, ip)
+	if err != nil {
+		return Renderer{}, err
+	}
+	r := Renderer{ID: d.UDN, Name: d.Name, Model: d.Model, IP: ip,
+		avt: d.Control("urn:schemas-upnp-org:service:AVTransport:"),
+		rc:  d.Control("urn:schemas-upnp-org:service:RenderingControl:"),
+		cm:  d.Control("urn:schemas-upnp-org:service:ConnectionManager:")}
 	if r.ID == "" || r.avt == "" {
 		return Renderer{}, errors.New("no AVTransport")
 	}
@@ -186,6 +242,30 @@ func (r Renderer) Takes(mime string) bool {
 	return false
 }
 
+// Fault is an action the device refused, with the UPnP error code it gave
+// (0 for none).
+type Fault struct {
+	Code int
+	Desc string
+	msg  string
+}
+
+func (f *Fault) Error() string { return f.msg }
+
+// maxAnswer is the longest answer read: a media server's list of 2000 items.
+const maxAnswer = 16 << 20
+
+// Call sends one SOAP action to a control URL and returns the values of the
+// answer.
+func Call(ctx context.Context, ctl, service, action string, args [][2]string) (map[string]string, error) {
+	return call(ctx, ctl, service, action, args)
+}
+
+// escaper writes the five predefined entities and nothing else: Go's own
+// writes numeric references (&#34;), which some devices do not read (minidlna
+// takes them as they are in a search).
+var escaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;", "'", "&apos;")
+
 // call sends one SOAP action and returns the values of the answer.
 func call(ctx context.Context, ctl, service, action string, args [][2]string) (map[string]string, error) {
 	if ctl == "" {
@@ -195,9 +275,7 @@ func call(ctx context.Context, ctl, service, action string, args [][2]string) (m
 	b.WriteString(`<?xml version="1.0" encoding="utf-8"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body>`)
 	b.WriteString(`<u:` + action + ` xmlns:u="` + service + `">`)
 	for _, a := range args {
-		b.WriteString("<" + a[0] + ">")
-		xml.EscapeText(&b, []byte(a[1]))
-		b.WriteString("</" + a[0] + ">")
+		b.WriteString("<" + a[0] + ">" + escaper.Replace(a[1]) + "</" + a[0] + ">")
 	}
 	b.WriteString(`</u:` + action + `></s:Body></s:Envelope>`)
 	req, err := http.NewRequestWithContext(ctx, "POST", ctl, strings.NewReader(b.String()))
@@ -211,9 +289,11 @@ func call(ctx context.Context, ctl, service, action string, args [][2]string) (m
 		return nil, err
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256<<10))
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxAnswer))
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s: %s %s", action, resp.Status, faultText(body))
+		v := values(body)
+		code, _ := strconv.Atoi(strings.TrimSpace(v["errorCode"]))
+		return nil, &Fault{code, v["errorDescription"], fmt.Sprintf("%s: %s %s", action, resp.Status, faultText(body))}
 	}
 	return values(body), nil
 }

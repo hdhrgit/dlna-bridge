@@ -162,6 +162,7 @@ func (s *Server) playOn(r *http.Request, rd renderer.Renderer, id string) error 
 			id = idOthers + "/listen/" + strings.TrimPrefix(id, idOthers+"/live/")
 		case strings.HasPrefix(id, idOthers+"/listen/"):
 		case strings.HasPrefix(id, "listen/"), strings.HasPrefix(id, "lsrcch/"):
+		case s.cfg.DLNA != nil: // its items are checked by their type below
 		default:
 			return errString(rd.Name + " plays sound only: pick a live channel")
 		}

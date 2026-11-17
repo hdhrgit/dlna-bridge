@@ -40,26 +40,33 @@ func DVRAddress(addr string) string {
 	return "http://" + addr
 }
 
-// Detect finds out what addr is: an M3U playlist, a Channels DVR, or (below)
-// a DLNA server. where is the address to use for that kind.
+// Detect finds out what addr is: an M3U playlist, a Channels DVR or a DLNA
+// server. A URL is read: a playlist, a DLNA server's description, or a DVR
+// if its /dvr says so. An address is asked for a DVR's /dvr, then for a DLNA
+// server by an SSDP search. where is the address to use for that kind.
 func Detect(ctx context.Context, addr, agent string) (kind, where string, err error) {
 	if IsURL(addr) {
 		body, err := get(ctx, addr, agent, 10*time.Second, 64<<10)
 		if err != nil {
 			return "", "", err
 		}
-		if IsPlaylist(body) {
+		switch {
+		case IsPlaylist(body):
 			return M3U, addr, nil
-		}
-		if IsDVR(ctx, DVRAddress(addr), agent) {
+		case bytes.Contains(body, []byte(strings.TrimSuffix(ContentDirectory, "1"))):
+			return DLNA, addr, nil
+		case IsDVR(ctx, DVRAddress(addr), agent):
 			return Channels, DVRAddress(addr), nil
 		}
-		return "", "", fmt.Errorf("%s is neither an M3U playlist nor a Channels DVR", addr)
+		return "", "", fmt.Errorf("%s is not an M3U playlist, a DLNA server's description or a Channels DVR", addr)
 	}
 	if base := DVRAddress(addr); IsDVR(ctx, base, agent) {
 		return Channels, base, nil
 	}
-	return "", "", fmt.Errorf("no Channels DVR answers at %s", DVRAddress(addr))
+	if _, _, err := locate(ctx, addr); err != nil {
+		return "", "", fmt.Errorf("neither a Channels DVR (%s) nor a DLNA server answers: %v", DVRAddress(addr), err)
+	}
+	return DLNA, addr, nil
 }
 
 // IsDVR says whether a Channels DVR answers at base: its /dvr gives the DVR's

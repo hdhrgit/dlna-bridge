@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"sort"
@@ -145,6 +146,13 @@ func (s *Server) streamAudio(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	feed := s.liveFeed(number, dev)
+	s.convertAudio(w, r, name, prof, fmt.Sprintf("%s %s", ch.Number, ch.Name), "pipe:0", &feed)
+}
+
+// convertAudio sends a stream's sound to a client in its profile's audio
+// format: a channel's, from its feed, or else what ffmpeg reads from input.
+func (s *Server) convertAudio(w http.ResponseWriter, r *http.Request, name string, prof config.Profile, what, input string, feed *feedReq) {
 	mime, features := audioFeatures(prof.Audio.Format)
 	w.Header().Set("Content-Type", mime)
 	w.Header().Set("Cache-Control", "no-cache, no-store")
@@ -154,7 +162,7 @@ func (s *Server) streamAudio(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ip := s.clientIP(r)
-	what := fmt.Sprintf("%s %s (sound, %s)", ch.Number, ch.Name, prof.Audio.Format)
+	what = fmt.Sprintf("%s (sound, %s)", what, prof.Audio.Format)
 	limit := s.cfg.Settings.MaxTranscodes()
 	id, ok := s.jobs.start(limit, name, ip, r.Header.Get("User-Agent"), what)
 	if !ok {
@@ -165,8 +173,13 @@ func (s *Server) streamAudio(w http.ResponseWriter, r *http.Request) {
 	w = &countWriter{w, s.jobs.counter(id)}
 	started := time.Now()
 	s.cfg.Logf("audio: %s to %s (%s)", what, ip, name)
-	in, release := s.joinFeed(s.liveFeed(number, dev), what)
-	_, msg, err := s.runFFmpeg(w, r, audioArgs(prof.Audio, "pipe:0", ""), in, false, stallLimit, what, nil)
+	var in io.Reader
+	release, agent, stall := func() {}, s.agent(), recordingStallLimit
+	if feed != nil {
+		in, release = s.joinFeed(*feed, what)
+		agent, stall = "", stallLimit
+	}
+	_, msg, err := s.runFFmpeg(w, r, audioArgs(prof.Audio, input, agent), in, false, stall, what, nil)
 	release()
 	s.cfg.Logf("audio: %s to %s ended after %s: %v %s", what, ip, time.Since(started).Round(time.Second), err, msg)
 }

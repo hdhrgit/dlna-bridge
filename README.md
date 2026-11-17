@@ -56,7 +56,7 @@ LAN address on the DVR's port. Open `http://HOST:8200/` to check the bridge reac
 | `-listen` | `DLNA_LISTEN` | `:8200` | HTTP address; the settings page is at `/` |
 | `-dvr` | `DLNA_DVR` | `http://localhost:8089` | the DVR, as the bridge reaches it |
 | `-source` | `DLNA_SOURCE` | | serve this instead of the DVR in `-dvr`; see [Other sources](#other-sources) |
-| `-source-type` | `DLNA_SOURCE_TYPE` | `auto` | what `-source` is: `auto`, `channels` or `m3u` |
+| `-source-type` | `DLNA_SOURCE_TYPE` | `auto` | what `-source` is: `auto`, `channels`, `dlna` or `m3u` |
 | `-dvr-public` | `DLNA_DVR_PUBLIC` | | the DVR as the TVs reach it, when `-dvr` is not that |
 | `-name` | `DLNA_NAME` | `Channels DVR` | the name the TVs list |
 | `-state` | `DLNA_STATE` | `/var/lib/dlna` in Docker | where `config.json` and the Samsung resume points are kept |
@@ -81,15 +81,17 @@ restarts and TVs do not list it twice.
 The bridge serves one source: the Channels DVR in `-dvr`, or, set in `DLNA_SOURCE`, one of these:
 
 ```
-DLNA_SOURCE=192.0.2.20                            # a Channels DVR on port 8089
+DLNA_SOURCE=192.0.2.20                            # a Channels DVR on port 8089, or a DLNA media server
 DLNA_SOURCE=192.0.2.20:8090                       # a Channels DVR on another port
 DLNA_SOURCE=http://example.com/channels.m3u8      # an M3U playlist of channels
+DLNA_SOURCE=http://192.0.2.20:8200/rootDesc.xml   # a DLNA media server's description
 ```
 
-Its type is found out at start: a URL that gives `#EXTM3U` is a playlist, and a URL or address whose `/dvr`
-answers as a Channels DVR is one (3 seconds). The type found is in the log and on the settings page. When
-nothing answers, the bridge serves an empty list and looks again every minute; `DLNA_SOURCE_TYPE` (`channels`
-or `m3u`) skips the looking. A Channels DVR found this way works as one in `-dvr`. With any other source the
+Its type is found out at start: a URL that gives `#EXTM3U` is a playlist, one that gives a UPnP description
+with a ContentDirectory is a DLNA server, and a URL or address whose `/dvr` answers as a Channels DVR is one
+(3 seconds). Failing that, an address is asked for a DLNA server (an SSDP search, below). The
+type found is in the log and on the settings page. When nothing answers, the bridge serves an empty list and
+looks again every minute; `DLNA_SOURCE_TYPE` (`channels`, `dlna` or `m3u`) skips the looking. A Channels DVR found this way works as one in `-dvr`. With any other source the
 bridge does not use `-dvr`, and the DVR's own folders, commercial cutting, shared resume points, plan-ahead,
 registration with the DVR and `/channels.m3u` are not there; the clients' profiles are.
 
@@ -100,6 +102,18 @@ and in Audio, numbered by `tvg-chno`, the rest after them in the list's order. A
 stream is one channel. A client set to Direct plays the playlist's own address; through the bridge, one read
 of each channel is shared by its clients, and an HLS channel is made an MPEG-TS by ffmpeg without converting
 (LG TVs do not play HLS). Only addresses in the playlist are read; a channel whose address fails gives 502.
+
+A **DLNA media server** (a NAS, minidlna, Plex, Jellyfin) is found by an SSDP search sent to its address on
+port 1900 and to the multicast group (minidlna hears only that), taking only the answer from its address, at
+start and again when it stops answering (it may come back on another port). Its description and control URL
+must be on that address, and the bridge only fetches streams and pictures there. The TVs see its folders
+with its own object ids, and the bridge's name is its `friendlyName` unless `DLNA_NAME` is set. Browse and
+Search go on to it (5 seconds; Search only if it searches). A client set to video sees its video and pictures,
+one set to sound its sound: the whole folder (up to 2000) is fetched for them and paged here. Direct clients
+play its own addresses; through the bridge, `/stream/src/<object id>` passes the stream through with byte
+ranges; converted, video is converted as the client's profile says and sound into its audio format, with no
+seeking. While it does not answer, the root is empty and streams give 502; when it answers again, the TVs
+are told to browse again.
 
 ## Behind a reverse proxy
 
