@@ -18,7 +18,7 @@ import (
 )
 
 // fakeMediaServer is a DLNA media server: a folder with a video, a song, a
-// picture and an item whose stream is elsewhere.
+// picture and an item whose stream is elsewhere, sent 3 at most at a time.
 func fakeMediaServer(t *testing.T) (*httptest.Server, *[]string) {
 	var asked []string
 	var srv *httptest.Server
@@ -77,7 +77,10 @@ func fakeMediaServer(t *testing.T) (*httptest.Server, *[]string) {
 			start, _ := strconv.Atoi(a.Args["StartingIndex"])
 			n, _ := strconv.Atoi(a.Args["RequestedCount"])
 			list, total = items[min(start, len(items)):], len(items)
-			if n > 0 && n < len(list) {
+			if n == 0 || n > 3 {
+				n = 3 // a page at most, as an HDHomeRun sends 100
+			}
+			if n < len(list) {
 				list = list[:n]
 			}
 		}
@@ -169,7 +172,7 @@ func TestSourceBrowse(t *testing.T) {
 }
 
 func TestSourceDirectAndKinds(t *testing.T) {
-	ms, _ := fakeMediaServer(t)
+	ms, asked := fakeMediaServer(t)
 	s := newSourceServer(t, ms, config.Config{
 		Default: config.Profile{Mode: config.ModeDirect},
 		Clients: []config.Client{{Name: "speaker", UserAgents: []string{"Speaker"}, Profile: config.Profile{Mode: config.ModeDirect, Kind: config.KindSound}}},
@@ -178,7 +181,9 @@ func TestSourceDirectAndKinds(t *testing.T) {
 	if len(f.Items) != 3 || f.Items[0].Res.URL != ms.URL+"/media/v.mkv" || f.Items[0].Res.Size != "1000" {
 		t.Errorf("direct: %+v", f.Items)
 	}
-	// A client set to sound sees the song alone, counted right.
+	// A client set to sound sees the song alone, counted right: the whole
+	// folder is fetched, page by page.
+	*asked = nil
 	body := `<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:Browse xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1"><ObjectID>f1</ObjectID><BrowseFlag>BrowseDirectChildren</BrowseFlag><StartingIndex>0</StartingIndex><RequestedCount>1</RequestedCount></u:Browse></s:Body></s:Envelope>`
 	req, _ := http.NewRequest("POST", s.URL+"/ctl/ContentDirectory", strings.NewReader(body))
 	req.Header.Set("User-Agent", "Speaker/1.0")
@@ -190,6 +195,9 @@ func TestSourceDirectAndKinds(t *testing.T) {
 	resp.Body.Close()
 	if !strings.Contains(string(out), "<TotalMatches>1</TotalMatches>") || !strings.Contains(string(out), "Song") || strings.Contains(string(out), "Holiday") {
 		t.Errorf("sound only: %s", out)
+	}
+	if strings.Join(*asked, ",") != "Browse f1 0/2000,Browse f1 3/1997" {
+		t.Errorf("the whole folder should be fetched, page by page: %v", *asked)
 	}
 }
 

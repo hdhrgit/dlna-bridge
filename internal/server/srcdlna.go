@@ -49,15 +49,39 @@ func (v view) hidesClass(o object) bool {
 
 // sourceList asks the source for a list, a folder's children or a search, and
 // makes its entries the client's. For a client that sees only some classes
-// the whole list is fetched and paged here, so that the count stays right;
-// otherwise start and count go to the source.
+// the whole list (up to maxSourceItems) is fetched and paged here, so that the
+// count stays right; it may take several asks, as a source sends a page at
+// most (an HDHomeRun 100). Otherwise start and count go to the source.
 func (s *Server) sourceList(ctx context.Context, v view, action string, args [][2]string, start, count int) ([]object, int, error) {
-	from, n := start, count
-	if v.filters() {
-		from, n = 0, maxSourceItems
+	if !v.filters() {
+		entries, total, err := s.sourcePage(ctx, action, args, start, count)
+		return s.sourceObjects(v, entries), total, err
 	}
-	args = append(args, [2]string{"Filter", "*"}, [2]string{"StartingIndex", strconv.Itoa(from)},
-		[2]string{"RequestedCount", strconv.Itoa(n)}, [2]string{"SortCriteria", ""})
+	var entries []didlEntry
+	for len(entries) < maxSourceItems {
+		page, total, err := s.sourcePage(ctx, action, args, len(entries), maxSourceItems-len(entries))
+		if err != nil {
+			return nil, 0, err
+		}
+		entries = append(entries, page...)
+		if len(page) == 0 || len(entries) >= total {
+			break
+		}
+	}
+	objs := s.sourceObjects(v, entries)
+	total := len(objs)
+	objs = objs[min(start, len(objs)):]
+	if count > 0 && count < len(objs) {
+		objs = objs[:count]
+	}
+	return objs, total, nil
+}
+
+// sourcePage asks the source for count entries of a list from start, and
+// its length.
+func (s *Server) sourcePage(ctx context.Context, action string, args [][2]string, start, count int) ([]didlEntry, int, error) {
+	args = append(args[:len(args):len(args)], [2]string{"Filter", "*"}, [2]string{"StartingIndex", strconv.Itoa(start)},
+		[2]string{"RequestedCount", strconv.Itoa(count)}, [2]string{"SortCriteria", ""})
 	out, err := s.cfg.DLNA.Call(ctx, action, args)
 	if err != nil {
 		return nil, 0, sourceError(err)
@@ -67,20 +91,18 @@ func (s *Server) sourceList(ctx context.Context, v view, action string, args [][
 		return nil, 0, err
 	}
 	total, _ := strconv.Atoi(out["TotalMatches"])
+	return entries, total, nil
+}
+
+// sourceObjects are the entries the client sees, as its own.
+func (s *Server) sourceObjects(v view, entries []didlEntry) []object {
 	var objs []object
 	for _, e := range entries {
 		if o, ok := s.sourceObject(v, e); ok && !v.hidesClass(o) {
 			objs = append(objs, o)
 		}
 	}
-	if v.filters() {
-		total = len(objs)
-		objs = objs[min(start, len(objs)):]
-		if count > 0 && count < len(objs) {
-			objs = objs[:count]
-		}
-	}
-	return objs, total, nil
+	return objs
 }
 
 // sourceChildren is a folder of the source, or for its root while it does not
