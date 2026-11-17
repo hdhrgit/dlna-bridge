@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +34,7 @@ type Server struct {
 	icon string
 	caps string // its search capabilities
 	err  error  // why it did not answer last, nil when it did
+	told string // the last failure to find it that was logged
 	back func()
 }
 
@@ -128,7 +130,7 @@ func (d *Server) Call(ctx context.Context, action string, args [][2]string) (map
 func (d *Server) answered(ctl string) {
 	d.mu.Lock()
 	wasDown, back := d.err != nil, d.back
-	d.err = nil
+	d.err, d.told = nil, ""
 	if ctl != "" && ctl != d.ctl {
 		d.ctl = ctl
 		d.logf("source: DLNA server %q at %s", d.name, ctl)
@@ -155,6 +157,10 @@ func (d *Server) find(ctx context.Context) error {
 	if err != nil {
 		d.mu.Lock()
 		d.err = err
+		if err.Error() != d.told {
+			d.told = err.Error()
+			d.logf("source: the DLNA server is not found: %v; looking for it every minute", err)
+		}
 		d.mu.Unlock()
 		return err
 	}
@@ -198,10 +204,25 @@ func locate(ctx context.Context, addr string) (loc, ip string, err error) {
 	if err != nil {
 		return "", "", err
 	}
-	for l, from := range locs {
-		if from == ip {
-			return l, ip, nil
-		}
+	if l := pick(locs, ip); l != "" {
+		return l, ip, nil
 	}
 	return "", "", fmt.Errorf("no DLNA server answers at %s", ip)
+}
+
+// pick is the LOCATION that ip answered with and that is on ip: a server can
+// also answer with another of its addresses (Emby on Windows gives one on
+// 127.0.0.1 too), which the bridge cannot reach it on.
+func pick(locs map[string]string, ip string) string {
+	var on []string
+	for l, from := range locs {
+		if u, err := url.Parse(l); err == nil && from == ip && u.Hostname() == ip {
+			on = append(on, l)
+		}
+	}
+	if len(on) == 0 {
+		return ""
+	}
+	slices.Sort(on) // the same one each time
+	return on[0]
 }

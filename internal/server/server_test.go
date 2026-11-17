@@ -130,6 +130,7 @@ type browseResult struct {
 type didlDoc struct {
 	Containers []struct {
 		ID         string `xml:"id,attr"`
+		Parent     string `xml:"parentID,attr"`
 		ChildCount int    `xml:"childCount,attr"`
 		Title      string `xml:"title"`
 	} `xml:"container"`
@@ -141,6 +142,7 @@ type didlDoc struct {
 		Res   struct {
 			Protocol string `xml:"protocolInfo,attr"`
 			Duration string `xml:"duration,attr"`
+			Size     string `xml:"size,attr"`
 			URL      string `xml:",chardata"`
 		} `xml:"res"`
 	} `xml:"item"`

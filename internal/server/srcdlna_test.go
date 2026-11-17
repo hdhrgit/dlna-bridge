@@ -43,7 +43,7 @@ func fakeMediaServer(t *testing.T) (*httptest.Server, *[]string) {
 		host := srv.URL
 		items := []string{
 			`<item id="v1" parentID="f1" restricted="1"><dc:title>Holiday</dc:title><upnp:class>object.item.videoItem.movie</upnp:class><dc:date>2026-07-01</dc:date>` +
-				`<upnp:albumArtURI>` + host + `/art/v1.jpg</upnp:albumArtURI><res protocolInfo="http-get:*:video/x-matroska:DLNA.ORG_OP=01" duration="0:01:30.500">` + host + `/media/v.mkv</res></item>`,
+				`<upnp:albumArtURI>` + host + `/art/v1.jpg</upnp:albumArtURI><res protocolInfo="http-get:*:video/x-matroska:DLNA.ORG_OP=01" duration="0:01:30.500" size="1000" resolution="1280x720" bitrate="250000" nrAudioChannels="2" sampleFrequency="48000" colorDepth="24">` + host + `/media/v.mkv</res></item>`,
 			`<item id="a1" parentID="f1" restricted="1"><dc:title>Song</dc:title><upnp:class>object.item.audioItem.musicTrack</upnp:class>` +
 				`<res protocolInfo="rtsp-rtp-udp:*:audio/mpeg:*">rtsp://x/a</res><res protocolInfo="http-get:*:audio/mpeg:*" duration="0:03:00">` + host + `/media/a.mp3</res></item>`,
 			`<item id="p1" parentID="f1" restricted="1"><dc:title>Photo</dc:title><upnp:class>object.item.imageItem.photo</upnp:class><res protocolInfo="http-get:*:image/jpeg:*">` + host + `/media/p.jpg</res></item>`,
@@ -70,7 +70,7 @@ func fakeMediaServer(t *testing.T) (*httptest.Server, *[]string) {
 				}
 			}
 		case a.Args["ObjectID"] == "0":
-			list, total = []string{`<container id="f1" parentID="0" childCount="4"><dc:title>Media</dc:title></container>`}, 1
+			list, total = []string{`<container id="f1" parentID="2" childCount="4"><dc:title>Media</dc:title></container>`}, 1
 		case a.Args["ObjectID"] == "f1":
 			start, _ := strconv.Atoi(a.Args["StartingIndex"])
 			n, _ := strconv.Atoi(a.Args["RequestedCount"])
@@ -113,7 +113,7 @@ func TestSourceBrowse(t *testing.T) {
 		t.Errorf("root: %+v", root.Containers)
 	}
 	_, top := browse(t, s.URL, "0", "BrowseDirectChildren", 0, 0)
-	if len(top.Containers) != 1 || top.Containers[0].ID != "f1" || top.Containers[0].ChildCount != 4 {
+	if len(top.Containers) != 1 || top.Containers[0].ID != "f1" || top.Containers[0].ChildCount != 4 || top.Containers[0].Parent != "0" {
 		t.Fatalf("top: %+v", top.Containers)
 	}
 	// Paging goes to the source for a client that sees everything.
@@ -122,7 +122,7 @@ func TestSourceBrowse(t *testing.T) {
 	if br.TotalMatches != 4 || len(page.Items) != 2 || (*asked)[0] != "Browse f1 0/2" {
 		t.Errorf("page: %d %+v %v", br.TotalMatches, page.Items, *asked)
 	}
-	_, f := browse(t, s.URL, "f1", "BrowseDirectChildren", 0, 0)
+	fr, f := browse(t, s.URL, "f1", "BrowseDirectChildren", 0, 0)
 	if len(f.Items) != 3 {
 		t.Fatalf("an item with its stream elsewhere should be left out: %+v", f.Items)
 	}
@@ -130,6 +130,9 @@ func TestSourceBrowse(t *testing.T) {
 	if v.ID != "v1" || v.Class != "object.item.videoItem.movie" || !strings.HasSuffix(v.Res.URL, "/stream/src/v1") ||
 		v.Res.Protocol != "http-get:*:video/x-matroska:DLNA.ORG_OP=01" || v.Res.Duration != "0:01:30.500" {
 		t.Errorf("video: %+v", v)
+	}
+	if !strings.Contains(fr.Result, `duration="0:01:30.500" size="1000" resolution="1280x720" bitrate="250000" nrAudioChannels="2" sampleFrequency="48000">`) {
+		t.Errorf("the source's size, resolution, bitrate and sound should be kept: %s", fr.Result)
 	}
 	if a := f.Items[1]; a.ID != "a1" || !strings.HasSuffix(a.Res.URL, "/stream/src/a1") || a.Res.Protocol != "http-get:*:audio/mpeg:*" {
 		t.Errorf("the http stream of the song should be kept: %+v", a)
@@ -170,7 +173,7 @@ func TestSourceDirectAndKinds(t *testing.T) {
 		Clients: []config.Client{{Name: "speaker", UserAgents: []string{"Speaker"}, Profile: config.Profile{Mode: config.ModeDirect, Kind: config.KindSound}}},
 	})
 	_, f := browse(t, s.URL, "f1", "BrowseDirectChildren", 0, 0)
-	if len(f.Items) != 3 || f.Items[0].Res.URL != ms.URL+"/media/v.mkv" {
+	if len(f.Items) != 3 || f.Items[0].Res.URL != ms.URL+"/media/v.mkv" || f.Items[0].Res.Size != "1000" {
 		t.Errorf("direct: %+v", f.Items)
 	}
 	// A client set to sound sees the song alone, counted right.
@@ -216,5 +219,21 @@ func TestSourceDown(t *testing.T) {
 	json.NewDecoder(resp.Body).Decode(&st)
 	if st.Source == nil || st.Source.OK || !strings.Contains(st.Source.Detail, "not answering") || st.Name != "NAS Media" {
 		t.Errorf("state: %+v %q", st.Source, st.Name)
+	}
+}
+
+// A converted stream is not the source's file: its size and the rest are not
+// passed on.
+func TestSourceConvertedHasNoSize(t *testing.T) {
+	ms, _ := fakeMediaServer(t)
+	s := newSourceServer(t, ms, config.Config{Default: config.Profile{Mode: config.ModeTranscode}})
+	br, f := browse(t, s.URL, "f1", "BrowseDirectChildren", 0, 0)
+	if len(f.Items) == 0 || f.Items[0].ID != "v1" || f.Items[0].Res.Protocol != transcodeProtocol {
+		t.Fatalf("converted: %+v", f.Items)
+	}
+	for _, a := range resAttrs {
+		if strings.Contains(br.Result, " "+a+"=") {
+			t.Errorf("%s of a converted stream: %s", a, br.Result)
+		}
 	}
 }

@@ -90,6 +90,12 @@ func (s *Server) sourceChildren(ctx context.Context, v view, id string, start, c
 	if err != nil && id == idRoot && !isFault(err) {
 		return nil, 0, nil
 	}
+	if id == idRoot {
+		// The source may name another parent for them (Emby does).
+		for i := range objs {
+			objs[i].Parent = idRoot
+		}
+	}
 	return objs, total, err
 }
 
@@ -166,11 +172,16 @@ type didlEntry struct {
 	Description string   `xml:"description"`
 	Art         []string `xml:"albumArtURI"`
 	Res         []struct {
-		Protocol string `xml:"protocolInfo,attr"`
-		Duration string `xml:"duration,attr"`
-		URL      string `xml:",chardata"`
+		Protocol string     `xml:"protocolInfo,attr"`
+		Duration string     `xml:"duration,attr"`
+		Attrs    []xml.Attr `xml:",any,attr"`
+		URL      string     `xml:",chardata"`
 	} `xml:"res"`
 }
+
+// resAttrs are the res attributes passed on with a stream that is not
+// converted: TVs show and seek by them.
+var resAttrs = []string{"size", "resolution", "bitrate", "nrAudioChannels", "sampleFrequency"}
 
 func parseDIDL(s string) ([]didlEntry, error) {
 	if strings.TrimSpace(s) == "" {
@@ -221,17 +232,29 @@ func (s *Server) sourceObject(v view, e didlEntry) (object, bool) {
 		}
 		o.Duration = parseClock(r.Duration)
 		bridge := "/stream/src/" + url.PathEscape(e.ID)
+		converted := false
 		switch {
 		case strings.HasPrefix(o.Class, "object.item.videoItem"):
 			res := s.resource(v, u, bridge, nil, false, r.Protocol)
 			o.URL, o.Protocol = res.url, res.protocol
+			converted = v.prof.Mode == config.ModeTranscode
 		case v.prof.Mode == config.ModeDirect:
 			o.URL, o.Protocol = u, r.Protocol
 		case strings.HasPrefix(o.Class, "object.item.audioItem") && v.prof.Mode == config.ModeTranscode && v.prof.Audio.Format != config.AudioCopy:
 			mime, features := audioFeatures(v.prof.Audio.Format)
 			o.URL, o.Protocol = s.bridgeURL(v, bridge, nil), "http-get:*:"+mime+":"+features
+			converted = true
 		default:
 			o.URL, o.Protocol = s.bridgeURL(v, bridge, nil), r.Protocol
+		}
+		if !converted {
+			for _, name := range resAttrs {
+				for _, a := range r.Attrs {
+					if a.Name.Local == name && a.Name.Space == "" && strings.TrimSpace(a.Value) != "" {
+						o.ResAttrs = append(o.ResAttrs, [2]string{name, strings.TrimSpace(a.Value)})
+					}
+				}
+			}
 		}
 		return o, true
 	}

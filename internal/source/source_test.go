@@ -2,12 +2,14 @@ package source
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -126,5 +128,67 @@ func TestPlaylistKeepsLastGoodCopy(t *testing.T) {
 	p = OpenPlaylist(context.Background(), srv.URL, cache, "test", nil)
 	if _, ok := p.Entry("news.example"); !ok {
 		t.Error("the kept copy was not read")
+	}
+}
+
+// Emby on Windows answers a search from its address with a LOCATION on
+// 127.0.0.1 too: only the one on its address is taken, each time.
+func TestPickLocation(t *testing.T) {
+	ip := "192.0.2.10"
+	locs := map[string]string{
+		"http://127.0.0.1:8096/dlna/x/description.xml":  ip,
+		"http://192.0.2.10:8096/dlna/x/description.xml": ip,
+		"http://192.0.2.11:8200/description.xml":        "192.0.2.11",
+		"http://192.0.2.10:9000/other/description.xml":  "192.0.2.11",
+		"http://[::1]:8096/dlna/x/description.xml":      ip,
+		"http://localhost:8096/dlna/x/description.xml":  ip,
+	}
+	for range 20 { // map order differs each time
+		if got := pick(locs, ip); got != "http://192.0.2.10:8096/dlna/x/description.xml" {
+			t.Fatalf("pick: %q", got)
+		}
+	}
+	delete(locs, "http://192.0.2.10:8096/dlna/x/description.xml")
+	if got := pick(locs, ip); got != "" {
+		t.Errorf("none on the address: %q", got)
+	}
+}
+
+// A server that is not found is logged once, not each minute, and again after
+// it was found and is lost.
+func TestFindLogsOnce(t *testing.T) {
+	var up atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !up.Load() {
+			http.NotFound(w, r)
+			return
+		}
+		switch r.URL.Path {
+		case "/desc.xml":
+			io.WriteString(w, `<root><device><friendlyName>NAS</friendlyName><serviceList><service><serviceType>`+ContentDirectory+
+				`</serviceType><controlURL>/ctl</controlURL></service></serviceList></device></root>`)
+		default:
+			io.WriteString(w, `<s:Envelope><s:Body><u:R><SearchCaps></SearchCaps></u:R></s:Body></s:Envelope>`)
+		}
+	}))
+	defer srv.Close()
+	var logged []string
+	d := NewServer(srv.URL+"/desc.xml", "test", func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) })
+	ctx := context.Background()
+	for range 3 {
+		d.find(ctx)
+	}
+	if len(logged) != 1 || !strings.Contains(logged[0], "not found") {
+		t.Fatalf("down: %q", logged)
+	}
+	up.Store(true)
+	if err := d.find(ctx); err != nil {
+		t.Fatal(err)
+	}
+	up.Store(false)
+	d.find(ctx)
+	d.find(ctx)
+	if len(logged) != 3 || !strings.Contains(logged[2], "not found") {
+		t.Errorf("lost again: %q", logged)
 	}
 }

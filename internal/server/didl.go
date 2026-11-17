@@ -19,6 +19,7 @@ type object struct {
 	URL         string
 	Protocol    string // the res protocolInfo
 	Duration    float64
+	ResAttrs    [][2]string // more res attributes, as a DLNA source gave them
 	Art         string
 	Description string
 	Date        time.Time
@@ -107,6 +108,9 @@ func didl(objs []object) string {
 		b.WriteString(`<res protocolInfo="` + escape(o.Protocol) + `"`)
 		if o.Duration > 0 {
 			b.WriteString(` duration="` + duration(o.Duration) + `"`)
+		}
+		for _, a := range o.ResAttrs {
+			b.WriteString(" " + a[0] + `="` + escape(a[1]) + `"`)
 		}
 		b.WriteString(">" + escape(o.URL) + "</res>")
 		b.WriteString("</item>")
