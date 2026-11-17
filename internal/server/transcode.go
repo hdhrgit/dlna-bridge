@@ -20,12 +20,19 @@ import (
 	"dlna/internal/cut"
 )
 
-// agent is what this server calls itself to the DVR.
+// agent is what this server calls itself to the DVR, or to the source.
 func (s *Server) agent() string {
 	if s.cfg.DVR == nil {
-		return ""
+		return s.cfg.UserAgent
 	}
 	return s.cfg.DVR.UserAgent
+}
+
+// setAgent marks a request as this server's.
+func (s *Server) setAgent(req *http.Request) {
+	if a := s.agent(); a != "" {
+		req.Header.Set("User-Agent", a)
+	}
 }
 
 // evenCeil rounds up to an even number: the DVR's encoder refuses odd heights.

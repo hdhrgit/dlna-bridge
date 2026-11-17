@@ -53,7 +53,7 @@ func (s *Server) apiBrowse(w http.ResponseWriter, r *http.Request) {
 	v := s.viewOf(r)
 	for _, o := range kids {
 		art := o.Art
-		if o.Class == classLive {
+		if o.Class == classLive && s.cfg.DVR != nil {
 			if now == nil {
 				now, _ = s.cfg.DVR.NowImages(r.Context())
 			}

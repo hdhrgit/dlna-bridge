@@ -124,7 +124,7 @@ func (v view) hides(id string) bool {
 // children lists what is in a folder the client sees, leaving out what it
 // does not.
 func (s *Server) children(ctx context.Context, v view, id string) ([]object, error) {
-	if v.hides(id) {
+	if v.hides(id) || !s.serves(id) {
 		return nil, errNoSuchObject
 	}
 	kids, err := s.allChildren(ctx, v, id)
@@ -211,7 +211,7 @@ func (s *Server) allChildren(ctx context.Context, v view, id string) ([]object, 
 
 // lookup finds one object the client sees.
 func (s *Server) lookup(ctx context.Context, v view, id string) (object, error) {
-	if v.hides(id) {
+	if v.hides(id) || !s.serves(id) {
 		return object{}, errNoSuchObject
 	}
 	return s.lookupAny(ctx, v, id)
@@ -247,10 +247,16 @@ func (s *Server) lookupAny(ctx context.Context, v view, id string) (object, erro
 		}
 		return o, err
 	case id == idSources:
+		if s.cfg.Playlist != nil {
+			return s.groupsFolder(folder("Channels by group", s.sourceFoldersFn(ctx, v)))
+		}
 		return folder("Channels by source", s.sourceFoldersFn(ctx, v))
 	case id == idListen:
 		return folder("Audio", func() ([]object, error) { return s.listenItems(ctx, v, "") })
 	case id == idListenSources:
+		if s.cfg.Playlist != nil {
+			return s.groupsFolder(folder("Audio by group", func() ([]object, error) { return s.listenSourceFolders(ctx, v) }))
+		}
 		return folder("Audio by source", func() ([]object, error) { return s.listenSourceFolders(ctx, v) })
 	case strings.HasPrefix(id, "lsrc/"):
 		folders, err := s.listenSourceFolders(ctx, v)
@@ -398,6 +404,20 @@ func (s *Server) folderArt(v view, id string) string {
 	return "http://" + v.host + "/icons/folder-" + id + ".png"
 }
 
+// groupsFolder leaves out a playlist's folder of groups when it has none.
+func (s *Server) groupsFolder(o object, err error) (object, error) {
+	if err != nil || o.Children > 1 {
+		return o, err
+	}
+	chs, _ := s.channels().AllChannels(context.Background())
+	for _, ch := range chs {
+		if ch.Source != "" {
+			return o, nil
+		}
+	}
+	return object{}, errNoSuchObject
+}
+
 func find(objs []object, id string) (object, error) {
 	for _, o := range objs {
 		if o.ID == id {
@@ -418,7 +438,7 @@ func (s *Server) channelObject(v view, ch dvr.Channel, id, parent, device, show 
 	if device != "" {
 		q.Set("dev", device)
 	}
-	res := s.resource(v, dvr.LivePath(device, ch.Number), "/stream/live/"+url.PathEscape(ch.Number), q, false, liveProtocol)
+	res := s.resource(v, s.liveDirect(v, ch, device), "/stream/live/"+url.PathEscape(s.chKey(ch)), q, false, liveProtocol)
 	return object{
 		ID: id, Parent: parent, Title: title, Class: classLive,
 		URL: res.url, Protocol: res.protocol, Art: s.channelArt(v, ch.Logo), ChannelNr: ch.Number, ChannelName: ch.Name,
@@ -429,12 +449,12 @@ func (s *Server) channelObject(v view, ch dvr.Channel, id, parent, device, show 
 
 // liveItems lists the channels in the Live TV folder, or just the favorites.
 func (s *Server) liveItems(ctx context.Context, v view, parent string) ([]object, error) {
-	chs, err := s.cfg.DVR.Channels(ctx)
+	chs, err := s.channels().Channels(ctx)
 	if err != nil {
 		return nil, err
 	}
 	// Without the guide the channels still play, just without show titles.
-	now, err := s.cfg.DVR.NowPlaying(ctx)
+	now, err := s.channels().NowPlaying(ctx)
 	if err != nil {
 		s.cfg.Logf("guide: %v", err)
 	}
@@ -443,7 +463,7 @@ func (s *Server) liveItems(ctx context.Context, v view, parent string) ([]object
 		if parent == idFavorites && !ch.Favorited {
 			continue
 		}
-		out = append(out, s.channelObject(v, ch, parent+"/"+ch.Number, parent, "", now[ch.Number]))
+		out = append(out, s.channelObject(v, ch, parent+"/"+s.chKey(ch), parent, "", now[ch.Number]))
 	}
 	return out, nil
 }
@@ -455,7 +475,7 @@ func (s *Server) sourceFoldersFn(ctx context.Context, v view) func() ([]object, 
 // sourceFolders is one folder for each source (tuner, M3U list...) that has
 // channels, by name.
 func (s *Server) sourceFolders(ctx context.Context, v view) ([]object, error) {
-	all, err := s.cfg.DVR.AllChannels(ctx)
+	all, err := s.channels().AllChannels(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -481,18 +501,18 @@ func (s *Server) sourceItems(ctx context.Context, v view, escaped string) ([]obj
 	if err != nil {
 		return nil, errNoSuchObject
 	}
-	all, err := s.cfg.DVR.AllChannels(ctx)
+	all, err := s.channels().AllChannels(ctx)
 	if err != nil {
 		return nil, err
 	}
-	now, err := s.cfg.DVR.NowPlaying(ctx)
+	now, err := s.channels().NowPlaying(ctx)
 	if err != nil {
 		s.cfg.Logf("guide: %v", err)
 	}
 	var out []object
 	for _, ch := range all {
 		if ch.Source == source {
-			out = append(out, s.channelObject(v, ch, "srcch/"+escaped+"/"+ch.Number, "src/"+escaped, ch.SourceID, now[ch.Number]))
+			out = append(out, s.channelObject(v, ch, "srcch/"+escaped+"/"+s.chKey(ch), "src/"+escaped, ch.SourceID, now[ch.Number]))
 		}
 	}
 	if out == nil {
@@ -539,7 +559,7 @@ func (s *Server) recordingObject(v view, f dvr.Recording, id, parent string) obj
 	if cut && v.prof.Seek == config.SeekTime {
 		protocol = timeProtocol
 	}
-	res := s.resource(v, dvr.RecordingPath(string(f.ID)), bridge, nil, cut, protocol)
+	res := s.resource(v, s.dvrPublic(v.host)+dvr.RecordingPath(string(f.ID)), bridge, nil, cut, protocol)
 	o := object{
 		ID: id, Parent: parent, Title: recordingTitle(f), Class: classRecorded,
 		URL: res.url, Protocol: res.protocol, Duration: f.Duration, Art: s.artURL(v, img), Description: f.Airing.Summary,
@@ -691,10 +711,11 @@ func recordingTitle(f dvr.Recording) string {
 
 type resource struct{ url, protocol string }
 
-// resource is where a client plays an item and how it is described: from the
-// DVR itself, through this server, or converted here. throughBridge forces the
-// bridge, for streams only it can make (recordings with their breaks cut).
-func (s *Server) resource(v view, dvrPath, bridgePath string, q url.Values, throughBridge bool, protocol string) resource {
+// resource is where a client plays an item and how it is described: from
+// direct, its address on the DVR or the source, through this server, or
+// converted here. throughBridge forces the bridge, for streams only it can
+// make (recordings with their breaks cut).
+func (s *Server) resource(v view, direct, bridgePath string, q url.Values, throughBridge bool, protocol string) resource {
 	via := func() string {
 		q := cloneValues(q)
 		if v.name != "" {
@@ -715,7 +736,7 @@ func (s *Server) resource(v view, dvrPath, bridgePath string, q url.Values, thro
 	case throughBridge || v.prof.Mode == config.ModeProxy:
 		return resource{via(), protocol}
 	}
-	return resource{s.dvrPublic(v.host) + dvrPath, protocol}
+	return resource{direct, protocol}
 }
 
 func cloneValues(q url.Values) url.Values {

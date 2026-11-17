@@ -45,7 +45,7 @@ func (s *Server) streamPosition(r *http.Request, f dvr.Recording, cut bool, star
 func (s *Server) bookmarkToDVR(r *http.Request, id string, sec int) {
 	rid, ok := strings.CutPrefix(id, "rec/")
 	_, prof := s.profileFor(r)
-	if prof.Playback == config.PlaybackKeep || !ok {
+	if prof.Playback == config.PlaybackKeep || !ok || s.cfg.DVR == nil {
 		return
 	}
 	f, found, err := s.cfg.DVR.Recording(r.Context(), rid)

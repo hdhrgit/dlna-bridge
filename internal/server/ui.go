@@ -3,12 +3,14 @@ package server
 import (
 	_ "embed"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"dlna/internal/config"
 	"dlna/internal/dvr"
+	"dlna/internal/source"
 	"dlna/internal/ssdp"
 )
 
@@ -47,20 +49,37 @@ type state struct {
 	FFmpegOK    bool             `json:"ffmpeg_ok"`
 	Discovery   *ssdp.Stats      `json:"discovery,omitempty"`
 	Location    string           `json:"location"` // where a TV finds the description
+	// Source is what is served in place of the DVR from -dvr, if anything.
+	Source *sourceState `json:"source,omitempty"`
+}
+
+// sourceState is the health of the source.
+type sourceState struct {
+	Address string `json:"address"`
+	Type    string `json:"type"` // channels, dlna or m3u; empty while not found
+	OK      bool   `json:"ok"`
+	Text    string `json:"text"`
+	Detail  string `json:"detail"`
 }
 
 func (s *Server) apiState(w http.ResponseWriter, r *http.Request) {
 	st := state{
-		Name: s.cfg.Name, Version: s.cfg.Version, DVR: s.cfg.DVR.Base.String(),
+		Name: s.cfg.Name, Version: s.cfg.Version,
 		Config: s.cfg.Settings.Get(), Builtin: config.Builtin(), ConfigPath: s.cfg.ConfigPath, Saved: s.cfg.Settings.Persistent(),
 		Clients: s.clients.list(), Streams: s.jobs.list(), Defaults: config.DefaultTranscode(),
-		DVRHealth: s.cfg.DVR.Health(), DVRClient: s.registration(), UptimeSecs: int64(time.Since(s.started).Seconds()), Location: "http://" + s.hostOf(r) + "/description.xml",
+		UptimeSecs: int64(time.Since(s.started).Seconds()), Location: "http://" + s.hostOf(r) + "/description.xml",
+		Activity: []string{}, Source: s.sourceState(),
 	}
 	st.FFmpeg, st.FFmpegOK = s.ffmpegInfo()
 	if s.cfg.Discovery != nil {
 		d := s.cfg.Discovery()
 		st.Discovery = &d
 	}
+	if s.cfg.DVR == nil {
+		writeJSON(w, http.StatusOK, st)
+		return
+	}
+	st.DVR, st.DVRHealth, st.DVRClient = s.cfg.DVR.Base.String(), s.cfg.DVR.Health(), s.registration()
 	if chs, err := s.cfg.DVR.Channels(r.Context()); err != nil {
 		st.DVRError = err.Error()
 	} else {
@@ -82,10 +101,31 @@ func (s *Server) apiState(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if st.Activity == nil {
-		st.Activity = []string{}
-	}
 	writeJSON(w, http.StatusOK, st)
+}
+
+// sourceState says how the source is doing; nil when the DVR is from -dvr.
+func (s *Server) sourceState() *sourceState {
+	if s.cfg.Source == "" {
+		return nil
+	}
+	st := &sourceState{Address: s.cfg.Source, Type: s.cfg.SourceType}
+	switch {
+	case s.cfg.SourceType == "":
+		st.Text, st.Detail = "not found yet", "nothing answers there as a Channels DVR, DLNA server or M3U playlist; trying again every minute"
+	case s.cfg.SourceType == source.Channels:
+		st.OK, st.Text = true, "a Channels DVR"
+	case s.cfg.Playlist != nil:
+		n, fetched, err := s.cfg.Playlist.Status()
+		st.OK, st.Text = err == nil && n > 0, fmt.Sprintf("M3U playlist, %d channels", n)
+		if !fetched.IsZero() {
+			st.Detail = "read " + fetched.Local().Format("2006-01-02 15:04")
+		}
+		if err != nil {
+			st.Detail += " · reading it again fails: " + err.Error()
+		}
+	}
+	return st
 }
 
 func (s *Server) apiSetConfig(w http.ResponseWriter, r *http.Request) {

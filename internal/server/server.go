@@ -19,6 +19,7 @@ import (
 	"dlna/internal/config"
 	"dlna/internal/dvr"
 	"dlna/internal/renderer"
+	"dlna/internal/source"
 	"dlna/internal/ssdp"
 )
 
@@ -63,6 +64,14 @@ type Config struct {
 	Discovery func() ssdp.Stats
 	// ConfigPath is where the settings are kept, for the page to say.
 	ConfigPath string
+	// Playlist, when set, is served in place of the DVR, which is then nil.
+	// With neither, the tree is empty: the source has not been found yet.
+	Playlist *source.Playlist
+	// Source is the address given in place of the DVR, and SourceType what it
+	// was found to be (empty while not yet found); both empty for -dvr.
+	Source, SourceType string
+	// UserAgent is what the bridge calls itself to a source that is not the DVR.
+	UserAgent string
 }
 
 type Server struct {
@@ -128,7 +137,19 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/renderers/{id}", s.apiRenderer)
 	mux.HandleFunc("POST /api/renderers/{id}/{do}", s.apiRenderer)
 	mux.HandleFunc("PUT /api/config", s.apiSetConfig)
-	mux.HandleFunc("GET /channels.m3u", s.playlist)
+	// What only the DVR has, and the channels until there are some.
+	needs := func(have func() bool, h http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if !have() {
+				http.NotFound(w, r)
+				return
+			}
+			h(w, r)
+		}
+	}
+	dvrOnly := func() bool { return s.cfg.DVR != nil }
+	hasChannels := func() bool { return s.channels() != nil }
+	mux.HandleFunc("GET /channels.m3u", needs(dvrOnly, s.playlist))
 	mux.HandleFunc("GET /description.xml", s.description)
 	mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, r *http.Request) {
 		b, typ, _ := iconFile("logo48.png") // browsers take a PNG here
@@ -150,10 +171,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /ctl/ContentDirectory", s.contentDirectory)
 	mux.HandleFunc("POST /ctl/ConnectionManager", s.connectionManager)
 	mux.HandleFunc("/evt/{service}", s.events)
-	mux.HandleFunc("GET /stream/live/{number}", s.streamLive)
-	mux.HandleFunc("GET /stream/audio/{number}", s.streamAudio)
-	mux.HandleFunc("GET /stream/rec/{id}", s.streamRecording)
-	mux.HandleFunc("GET /stream/adfree/{id}", s.streamAdFree)
+	mux.HandleFunc("GET /stream/live/{number}", needs(hasChannels, s.streamLive))
+	mux.HandleFunc("GET /stream/audio/{number}", needs(hasChannels, s.streamAudio))
+	mux.HandleFunc("GET /stream/rec/{id}", needs(dvrOnly, s.streamRecording))
+	mux.HandleFunc("GET /stream/adfree/{id}", needs(dvrOnly, s.streamAdFree))
 	return logRequests(s.cfg.Logf, s.cfg.Version, s.who, mux)
 }
 

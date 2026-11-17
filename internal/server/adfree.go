@@ -289,7 +289,7 @@ func (s *Server) adFreeRecording(w http.ResponseWriter, r *http.Request, id stri
 	file := s.cfg.DVR.File(f)
 	plan, err := s.plans.get(r.Context(), f, file)
 	if err != nil {
-		s.proxy(w, r, dvr.RecordingPath(id), recFeatures) // the plans log why
+		s.proxy(w, r, s.cfg.DVR.Base.String()+dvr.RecordingPath(id), videoMIME, recFeatures) // the plans log why
 		return
 	}
 	cf := plan.Open(r.Context(), file.Open)

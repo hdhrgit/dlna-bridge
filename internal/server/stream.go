@@ -23,6 +23,12 @@ import (
 func (s *Server) streamLive(w http.ResponseWriter, r *http.Request) {
 	number, dev := r.PathValue("number"), r.URL.Query().Get("dev")
 	name, prof := s.profileFor(r)
+	if s.cfg.Playlist != nil {
+		if _, ok := s.cfg.Playlist.Entry(number); !ok {
+			http.NotFound(w, r) // only the playlist's own addresses are read
+			return
+		}
+	}
 	if prof.Mode != config.ModeTranscode {
 		obj := "live/" + number
 		if dev != "" {
@@ -30,10 +36,14 @@ func (s *Server) streamLive(w http.ResponseWriter, r *http.Request) {
 		}
 		tw, done := s.tracked(w, r, "live", name, s.whatLive(r, number), obj)
 		defer done()
-		s.proxy(tw, r, dvr.LivePath(dev, number), liveFeatures)
+		if s.cfg.Playlist != nil {
+			s.relay(tw, r, s.liveFeed(number, dev), s.whatLive(r, number))
+			return
+		}
+		s.proxy(tw, r, s.cfg.DVR.Base.String()+dvr.LivePath(dev, number), videoMIME, liveFeatures)
 		return
 	}
-	ch, found, err := s.cfg.DVR.Channel(r.Context(), number)
+	ch, found, err := s.channels().Channel(r.Context(), number)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -42,7 +52,8 @@ func (s *Server) streamLive(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	s.transcode(w, r, prof.Transcode, name, number+" "+ch.Name, "", &feedReq{dev: dev, number: number}, true, 0)
+	feed := s.liveFeed(number, dev)
+	s.transcode(w, r, prof.Transcode, name, ch.Number+" "+ch.Name, "", &feed, true, 0)
 }
 
 func (s *Server) streamRecording(w http.ResponseWriter, r *http.Request) {
@@ -56,7 +67,7 @@ func (s *Server) streamRecording(w http.ResponseWriter, r *http.Request) {
 			features = growingFeatures
 		}
 		bc, began := &byteCounter{ResponseWriter: tw}, time.Now()
-		s.proxy(bc, r, dvr.RecordingPath(id), features)
+		s.proxy(bc, r, s.cfg.DVR.Base.String()+dvr.RecordingPath(id), videoMIME, features)
 		// The TV has usually hung up by now, which ends r's context.
 		if f, found, err := s.cfg.DVR.Recording(context.WithoutCancel(r.Context()), id); err == nil && found {
 			s.streamPosition(r, f, false, rangeStart(r), bc.n, f.FileSize, began)
@@ -70,7 +81,8 @@ func (s *Server) streamRecording(w http.ResponseWriter, r *http.Request) {
 	s.transcode(w, r, prof.Transcode, name, "recording "+id, s.cfg.DVR.Base.String()+dvr.RecordingPath(id), nil, false, length)
 }
 
-func (s *Server) proxy(w http.ResponseWriter, r *http.Request, dvrPath, features string) {
+// proxy passes a stream through from u, the DVR's or the source's, as mime.
+func (s *Server) proxy(w http.ResponseWriter, r *http.Request, u, mime, features string) {
 	method := r.Method
 	rg := r.Header.Get("Range")
 	if method == http.MethodHead {
@@ -83,24 +95,24 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, dvrPath, features
 			rg = "bytes=0-0"
 		}
 	}
-	req, err := http.NewRequestWithContext(r.Context(), method, s.cfg.DVR.Base.String()+dvrPath, nil)
+	req, err := http.NewRequestWithContext(r.Context(), method, u, nil)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	s.cfg.DVR.SetAgent(req)
+	s.setAgent(req)
 	if rg != "" {
 		req.Header.Set("Range", rg)
 	}
 	if r.Method == http.MethodHead && features == liveFeatures {
-		s.dlnaHeaders(w, features)
+		s.dlnaHeaders(w, mime, features)
 		return
 	}
 	if features == growingFeatures && r.Method == http.MethodGet && rangeStart(r) > 0 {
 		// The DVR does not answer a range past what it has of a recording
 		// still being made, until it has it: refuse one past the end now.
-		if end, ok := s.growingEnd(r, dvrPath); ok && rangeStart(r) > end {
-			s.dlnaHeaders(w, features)
+		if end, ok := s.growingEnd(r, u); ok && rangeStart(r) > end {
+			s.dlnaHeaders(w, mime, features)
 			w.Header().Set("availableSeekRange.dlna.org", "1 bytes=0-"+strconv.FormatInt(end, 10))
 			http.Error(w, "not recorded yet", http.StatusRequestedRangeNotSatisfiable)
 			return
@@ -113,7 +125,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, dvrPath, features
 		return
 	}
 	defer resp.Body.Close()
-	s.dlnaHeaders(w, features)
+	s.dlnaHeaders(w, mime, features)
 	if r.Method == http.MethodHead {
 		// Content-Range is "bytes 0-0/<length>"; the HEAD answer is the whole file.
 		if _, total, ok := strings.Cut(resp.Header.Get("Content-Range"), "/"); ok && total != "*" {
@@ -146,15 +158,39 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, dvrPath, features
 	copyFlushing(w, resp.Body)
 }
 
+// relay passes a playlist's channel on from its feed, which every client of
+// the channel shares, as a live stream. A channel whose address gives nothing
+// is a 502.
+func (s *Server) relay(w http.ResponseWriter, r *http.Request, req feedReq, what string) {
+	if r.Method == http.MethodHead {
+		s.dlnaHeaders(w, videoMIME, liveFeatures)
+		return
+	}
+	in, release := s.joinFeed(req, what)
+	defer release()
+	stop := context.AfterFunc(r.Context(), release) // a read waiting on the feed ends
+	defer stop()
+	buf := make([]byte, 64<<10)
+	n, err := in.Read(buf)
+	if n == 0 {
+		http.Error(w, fmt.Sprintf("%s: %v", what, err), http.StatusBadGateway)
+		return
+	}
+	s.dlnaHeaders(w, videoMIME, liveFeatures)
+	if _, err := w.Write(buf[:n]); err == nil {
+		copyFlushing(w, in)
+	}
+}
+
 // growingEnd is the last byte the DVR has of a recording still being made.
-func (s *Server) growingEnd(r *http.Request, dvrPath string) (int64, bool) {
+func (s *Server) growingEnd(r *http.Request, u string) (int64, bool) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "GET", s.cfg.DVR.Base.String()+dvrPath, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 	if err != nil {
 		return 0, false
 	}
-	s.cfg.DVR.SetAgent(req)
+	s.setAgent(req)
 	req.Header.Set("Range", "bytes=0-0")
 	resp, err := http.DefaultTransport.RoundTrip(req)
 	if err != nil {
@@ -183,8 +219,8 @@ func availableRange(w http.ResponseWriter, resp *http.Response) {
 	}
 }
 
-func (s *Server) dlnaHeaders(w http.ResponseWriter, features string) {
-	w.Header().Set("Content-Type", videoMIME)
+func (s *Server) dlnaHeaders(w http.ResponseWriter, mime, features string) {
+	w.Header().Set("Content-Type", mime)
 	w.Header().Set("TransferMode.DLNA.ORG", "Streaming")
 	w.Header().Set("ContentFeatures.DLNA.ORG", features)
 }

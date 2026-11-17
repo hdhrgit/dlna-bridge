@@ -15,12 +15,14 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"dlna/internal/config"
 	"dlna/internal/dvr"
 	"dlna/internal/server"
+	"dlna/internal/source"
 	"dlna/internal/ssdp"
 )
 
@@ -29,6 +31,8 @@ var version = "dev"
 func main() {
 	listen := flag.String("listen", envOr("DLNA_LISTEN", ":8200"), "address to listen on")
 	dvrURL := flag.String("dvr", envOr("DLNA_DVR", "http://localhost:8089"), "address of the Channels DVR")
+	src := flag.String("source", envOr("DLNA_SOURCE", ""), "serve this instead of -dvr: a server's address (host or host:port), or an http(s) URL")
+	srcType := flag.String("source-type", envOr("DLNA_SOURCE_TYPE", source.Auto), "what -source is: auto (find out), channels, dlna or m3u")
 	dvrPublic := flag.String("dvr-public", envOr("DLNA_DVR_PUBLIC", ""), "the DVR's address as the TVs reach it (default: -dvr, with localhost swapped for this machine's address)")
 	name := flag.String("name", envOr("DLNA_NAME", "Channels DVR"), "name the TVs show")
 	advertise := flag.String("advertise", envOr("DLNA_ADVERTISE", ""), "address to announce to the TVs (default: the one facing each TV)")
@@ -56,15 +60,26 @@ func main() {
 	if *streams != config.ModeDirect && *streams != config.ModeProxy {
 		fatal(fmt.Errorf("-streams must be direct or proxy, not %q", *streams))
 	}
-
-	client, err := dvr.New(*dvrURL)
-	if err != nil {
-		fatal(err)
+	switch *srcType {
+	case source.Auto, source.Channels, source.M3U:
+	default:
+		fatal(fmt.Errorf("-source-type must be auto, channels or m3u, not %q", *srcType))
 	}
-	client.MaxStale = *maxStale
-	client.UserAgent = "dlna-bridge/" + version
+	if *srcType == source.M3U && !source.IsURL(*src) {
+		fatal(fmt.Errorf("-source-type m3u needs an http(s) URL in -source, not %q", *src))
+	}
+	agent := "dlna-bridge/" + version
 	if *userAgent != "" {
-		client.UserAgent = *userAgent
+		agent = *userAgent
+	}
+	newDVR := func(addr string) *dvr.Client {
+		client, err := dvr.New(addr)
+		if err != nil {
+			fatal(err)
+		}
+		client.MaxStale = *maxStale
+		client.UserAgent = agent
+		return client
 	}
 	bookmarks, err := server.OpenBookmarks(*state)
 	if err != nil {
@@ -105,27 +120,91 @@ func main() {
 		}
 	}
 	uuid := stableUUID(*name, *dvrURL)
+	if *src != "" {
+		uuid = stableUUID(*name, *src)
+	}
 
 	logs := server.NewLogBuffer(500)
 	var adv *ssdp.Advertiser
-	srv := server.New(server.Config{
+	base := server.Config{
 		Name: *name, UUID: uuid, Version: version,
-		DVR: client, DVRPublic: *dvrPublic, Settings: settings, FFmpeg: *ffmpeg,
+		DVRPublic: *dvrPublic, Settings: settings, FFmpeg: *ffmpeg,
 		TrustedProxies: trusted, SelfURL: "http://127.0.0.1:" + portStr, PlansDir: plansDir, PlanAheadBreaks: *planAheadBreaks, ClientName: *clientName, Debug: *debug, Bookmarks: bookmarks,
 		Logf: logs.Logf, Logs: logs, ConfigPath: *configFile,
 		Discovery: func() ssdp.Stats { return adv.Stats() },
-	})
+		Source:    *src, UserAgent: agent,
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	go srv.KeepRegistered(ctx)
-	go srv.WatchChanges(ctx)
-	go srv.WatchGuide(ctx)
-	if *planAhead {
-		go srv.PlanAhead(ctx)
+	// serve starts serving a source of a kind, at where, in place of what was
+	// served before.
+	var handler swapHandler
+	serve := func(kind, where string) {
+		cfg := base
+		cfg.SourceType = kind
+		if *src != "" {
+			logs.Logf("source: %s is %s, at %s", *src, kindName[kind], where)
+		}
+		switch kind {
+		case source.Channels:
+			cfg.DVR = newDVR(where)
+			srv := server.New(cfg)
+			go srv.KeepRegistered(ctx)
+			go srv.WatchChanges(ctx)
+			go srv.WatchGuide(ctx)
+			if *planAhead {
+				go srv.PlanAhead(ctx)
+			}
+			handler.set(srv.Handler())
+			return
+		case source.M3U:
+			cfg.Playlist = source.OpenPlaylist(ctx, where, source.CacheFile(*state, where), agent, logs.Logf)
+			srv := server.New(cfg)
+			go srv.WatchPlaylist(ctx)
+			handler.set(srv.Handler())
+		}
+		logs.Logf("source: not a Channels DVR, so DLNA_DVR (%s) is not used", *dvrURL)
 	}
-	hs := &http.Server{Addr: *listen, Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second, ConnContext: server.ConnContext}
+	switch {
+	case *src == "":
+		serve(source.Channels, *dvrURL)
+	case *srcType == source.Channels:
+		serve(source.Channels, source.DVRAddress(*src))
+	case *srcType == source.M3U:
+		serve(source.M3U, *src)
+	default:
+		kind, where, err := source.Detect(ctx, *src, agent)
+		if err != nil && source.IsURL(*src) {
+			// A playlist read before is served while its host is down.
+			if _, serr := os.Stat(source.CacheFile(*state, *src)); serr == nil {
+				kind, where, err = source.M3U, *src, nil
+			}
+		}
+		if err == nil {
+			serve(kind, where)
+			break
+		}
+		// Nothing answers: an empty server until something does.
+		logs.Logf("source: %v; looking again every minute", err)
+		handler.set(server.New(base).Handler())
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(time.Minute):
+				}
+				kind, where, err := source.Detect(ctx, *src, agent)
+				if err == nil {
+					serve(kind, where)
+					return
+				}
+			}
+		}()
+	}
+	hs := &http.Server{Addr: *listen, Handler: &handler, ReadHeaderTimeout: 10 * time.Second, ConnContext: server.ConnContext}
 	go func() {
 		<-ctx.Done()
 		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -139,11 +218,31 @@ func main() {
 		}
 	}()
 
-	log.Printf("dlna %s: %q on %s for the DVR at %s, settings in %q", version, *name, *listen, *dvrURL, *configFile)
+	if *src != "" {
+		log.Printf("dlna %s: %q on %s for %s, settings in %q", version, *name, *listen, *src, *configFile)
+	} else {
+		log.Printf("dlna %s: %q on %s for the DVR at %s, settings in %q", version, *name, *listen, *dvrURL, *configFile)
+	}
 	if err := hs.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		fatal(err)
 	}
 	time.Sleep(200 * time.Millisecond) // let the byebye go out
+}
+
+var kindName = map[string]string{
+	source.Channels: "a Channels DVR",
+	source.DLNA:     "a DLNA server",
+	source.M3U:      "an M3U playlist",
+}
+
+// swapHandler serves with one handler and then another: the server of the
+// source once it is found.
+type swapHandler struct{ h atomic.Pointer[http.Handler] }
+
+func (s *swapHandler) set(h http.Handler) { s.h.Store(&h) }
+
+func (s *swapHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	(*s.h.Load()).ServeHTTP(w, r)
 }
 
 // stableUUID keeps the same id across restarts, so TVs do not list the server

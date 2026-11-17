@@ -50,7 +50,7 @@ func (s *Server) audioObject(v view, ch dvr.Channel, id, parent, device, show st
 	if v.name != "" {
 		q.Set("profile", v.name)
 	}
-	u := "http://" + v.host + "/stream/audio/" + url.PathEscape(ch.Number)
+	u := "http://" + v.host + "/stream/audio/" + url.PathEscape(s.chKey(ch))
 	if len(q) > 0 {
 		u += "?" + q.Encode()
 	}
@@ -67,22 +67,22 @@ func (s *Server) listenItems(ctx context.Context, v view, source string) ([]obje
 	var chs []dvr.Channel
 	var err error
 	if source == "" {
-		chs, err = s.cfg.DVR.Channels(ctx)
+		chs, err = s.channels().Channels(ctx)
 	} else {
-		chs, err = s.cfg.DVR.AllChannels(ctx)
+		chs, err = s.channels().AllChannels(ctx)
 	}
 	if err != nil {
 		return nil, err
 	}
-	now, _ := s.cfg.DVR.NowPlaying(ctx)
+	now, _ := s.channels().NowPlaying(ctx)
 	var out []object
 	esc := url.PathEscape(source)
 	for _, ch := range chs {
 		switch {
 		case source == "":
-			out = append(out, s.audioObject(v, ch, idListen+"/"+ch.Number, idListen, "", now[ch.Number]))
+			out = append(out, s.audioObject(v, ch, idListen+"/"+s.chKey(ch), idListen, "", now[ch.Number]))
 		case ch.Source == source:
-			out = append(out, s.audioObject(v, ch, "lsrcch/"+esc+"/"+ch.Number, "lsrc/"+esc, ch.SourceID, now[ch.Number]))
+			out = append(out, s.audioObject(v, ch, "lsrcch/"+esc+"/"+s.chKey(ch), "lsrc/"+esc, ch.SourceID, now[ch.Number]))
 		}
 	}
 	if source != "" && out == nil {
@@ -93,7 +93,7 @@ func (s *Server) listenItems(ctx context.Context, v view, source string) ([]obje
 
 // listenSourceFolders is a folder per source, as Channels by source.
 func (s *Server) listenSourceFolders(ctx context.Context, v view) ([]object, error) {
-	all, err := s.cfg.DVR.AllChannels(ctx)
+	all, err := s.channels().AllChannels(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -136,7 +136,7 @@ func audioArgs(a config.Audio, input, userAgent string) []string {
 func (s *Server) streamAudio(w http.ResponseWriter, r *http.Request) {
 	number, dev := r.PathValue("number"), r.URL.Query().Get("dev")
 	name, prof := s.profileFor(r)
-	ch, found, err := s.cfg.DVR.Channel(r.Context(), number)
+	ch, found, err := s.channels().Channel(r.Context(), number)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -154,7 +154,7 @@ func (s *Server) streamAudio(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ip := s.clientIP(r)
-	what := fmt.Sprintf("%s %s (sound, %s)", number, ch.Name, prof.Audio.Format)
+	what := fmt.Sprintf("%s %s (sound, %s)", ch.Number, ch.Name, prof.Audio.Format)
 	limit := s.cfg.Settings.MaxTranscodes()
 	id, ok := s.jobs.start(limit, name, ip, r.Header.Get("User-Agent"), what)
 	if !ok {
@@ -165,7 +165,7 @@ func (s *Server) streamAudio(w http.ResponseWriter, r *http.Request) {
 	w = &countWriter{w, s.jobs.counter(id)}
 	started := time.Now()
 	s.cfg.Logf("audio: %s to %s (%s)", what, ip, name)
-	in, release := s.joinFeed(feedReq{dev: dev, number: number}, what)
+	in, release := s.joinFeed(s.liveFeed(number, dev), what)
 	_, msg, err := s.runFFmpeg(w, r, audioArgs(prof.Audio, "pipe:0", ""), in, false, stallLimit, what, nil)
 	release()
 	s.cfg.Logf("audio: %s to %s ended after %s: %v %s", what, ip, time.Since(started).Round(time.Second), err, msg)

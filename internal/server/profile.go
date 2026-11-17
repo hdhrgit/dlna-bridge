@@ -357,7 +357,7 @@ func (s *Server) hostOf(r *http.Request) string {
 
 // whatLive names a channel for the page.
 func (s *Server) whatLive(r *http.Request, number string) string {
-	if ch, ok, _ := s.cfg.DVR.Channel(r.Context(), number); ok {
+	if ch, ok, _ := s.channels().Channel(r.Context(), number); ok {
 		return ch.Number + " " + ch.Name
 	}
 	return number

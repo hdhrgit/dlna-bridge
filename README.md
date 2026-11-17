@@ -55,6 +55,8 @@ LAN address on the DVR's port. Open `http://HOST:8200/` to check the bridge reac
 |---|---|---|---|
 | `-listen` | `DLNA_LISTEN` | `:8200` | HTTP address; the settings page is at `/` |
 | `-dvr` | `DLNA_DVR` | `http://localhost:8089` | the DVR, as the bridge reaches it |
+| `-source` | `DLNA_SOURCE` | | serve this instead of the DVR in `-dvr`; see [Other sources](#other-sources) |
+| `-source-type` | `DLNA_SOURCE_TYPE` | `auto` | what `-source` is: `auto`, `channels` or `m3u` |
 | `-dvr-public` | `DLNA_DVR_PUBLIC` | | the DVR as the TVs reach it, when `-dvr` is not that |
 | `-name` | `DLNA_NAME` | `Channels DVR` | the name the TVs list |
 | `-state` | `DLNA_STATE` | `/var/lib/dlna` in Docker | where `config.json` and the Samsung resume points are kept |
@@ -71,8 +73,33 @@ LAN address on the DVR's port. Open `http://HOST:8200/` to check the bridge reac
 | `-ffmpeg` | `DLNA_FFMPEG` | `ffmpeg` | |
 | `-streams`, `-keep-ads`, `-max-transcodes` | `DLNA_STREAMS`, `DLNA_KEEP_ADS`, `DLNA_MAX_TRANSCODES` | | the first-run default profile, until the settings page saves a file |
 
-The server's id comes from the host name, `-name` and `-dvr`, so it stays the same across restarts and TVs do
-not list it twice.
+The server's id comes from the host name, `-name` and `-dvr` (or `-source`), so it stays the same across
+restarts and TVs do not list it twice.
+
+## Other sources
+
+The bridge serves one source: the Channels DVR in `-dvr`, or, set in `DLNA_SOURCE`, one of these:
+
+```
+DLNA_SOURCE=192.0.2.20                            # a Channels DVR on port 8089
+DLNA_SOURCE=192.0.2.20:8090                       # a Channels DVR on another port
+DLNA_SOURCE=http://example.com/channels.m3u8      # an M3U playlist of channels
+```
+
+Its type is found out at start: a URL that gives `#EXTM3U` is a playlist, and a URL or address whose `/dvr`
+answers as a Channels DVR is one (3 seconds). The type found is in the log and on the settings page. When
+nothing answers, the bridge serves an empty list and looks again every minute; `DLNA_SOURCE_TYPE` (`channels`
+or `m3u`) skips the looking. A Channels DVR found this way works as one in `-dvr`. With any other source the
+bridge does not use `-dvr`, and the DVR's own folders, commercial cutting, shared resume points, plan-ahead,
+registration with the DVR and `/channels.m3u` are not there; the clients' profiles are.
+
+An **M3U playlist** is read at start and then every hour, and the last good copy is kept in `-state`, so a
+restart while its host is down still has the channels. Its channels (`#EXTINF` with `tvg-id`, `tvg-name`,
+`tvg-logo`, `tvg-chno`, `group-title`) are in Live TV, in a folder per `group-title` (when there are groups)
+and in Audio, numbered by `tvg-chno`, the rest after them in the list's order. A URL that is itself one HLS
+stream is one channel. A client set to Direct plays the playlist's own address; through the bridge, one read
+of each channel is shared by its clients, and an HLS channel is made an MPEG-TS by ffmpeg without converting
+(LG TVs do not play HLS). Only addresses in the playlist are read; a channel whose address fails gives 502.
 
 ## Behind a reverse proxy
 
