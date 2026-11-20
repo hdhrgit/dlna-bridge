@@ -94,8 +94,8 @@ func TestPlaylistTree(t *testing.T) {
 	}
 	json.NewDecoder(resp.Body).Decode(&st)
 	resp.Body.Close()
-	if st.Source == nil || !st.Source.OK || st.Source.Text != "M3U playlist, 2 channels" || st.DVR != "" {
-		t.Errorf("state: %+v %+v", st.Source, st.DVR)
+	if st.Source == nil || !st.Source.OK || st.Source.Text != "M3U playlist, 2 channels" || st.DVR != "" || len(st.Activity) != 0 {
+		t.Errorf("state: %+v %+v %v", st.Source, st.DVR, st.Activity)
 	}
 }
 
